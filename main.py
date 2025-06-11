@@ -8,6 +8,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import nltk
+from sklearn.metrics import confusion_matrix, classification_report
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline as hf_pipeline
 from rouge_score import rouge_scorer
 from bert_score import score as bert_score_calculate
@@ -56,8 +57,13 @@ JUDGE_LLM_CONFIG = {
 }
 
 MAX_TEXTS_TO_PROCESS = 500
-SQUAD_JSON_FILE_PATH = './data/train-v2.0.json'
+SQUAD_JSON_FILE_PATH = './data/train-v2.0.json'  # Original SQuAD format
+CUSTOM_JSON_FILE_PATH = './data/squad_500.json'  # New custom format
 PLOTS_OUTPUT_DIR = 'rephrasing_plots_azure_ai_inf'
+
+# Choose which data file to use
+USE_CUSTOM_FORMAT = True  # Set to True for new format, False for original SQuAD
+DATA_FILE_PATH = CUSTOM_JSON_FILE_PATH if USE_CUSTOM_FORMAT else SQUAD_JSON_FILE_PATH
 
 # Global variables
 current_hf_model, current_hf_tokenizer, current_hf_device = None, None, None
@@ -105,6 +111,210 @@ def load_qa_pipeline(device):
         except Exception as e: 
             print(f"Error loading QA pipeline: {e}")
             qa_validation_pipeline = None
+
+# ===== NEW: JACCARD SIMILARITY SCORE CALCULATION =====
+def calculate_jaccard_score(original_text, rephrased_text, mode='token'):
+    """
+    Calculate Jaccard similarity between original and rephrased text.
+    
+    Jaccard similarity = |A ∩ B| / |A ∪ B|
+    
+    Args:
+        original_text: Original text
+        rephrased_text: Rephrased text  
+        mode: 'token' for word-level, 'char' for character-level, 'ngram' for n-gram level
+    
+    Returns:
+        Jaccard similarity score (0.0 to 1.0)
+    """
+    try:
+        if not original_text or not rephrased_text:
+            return 0.0
+        
+        if mode == 'token':
+            # Word-level Jaccard similarity
+            orig_tokens = set(original_text.lower().split())
+            repr_tokens = set(rephrased_text.lower().split())
+            
+        elif mode == 'char':
+            # Character-level Jaccard similarity
+            orig_tokens = set(original_text.lower())
+            repr_tokens = set(rephrased_text.lower())
+            
+        elif mode == 'ngram':
+            # Bigram-level Jaccard similarity
+            def get_ngrams(text, n=2):
+                tokens = text.lower().split()
+                return set(zip(tokens[i:], tokens[i+1:]) for i in range(len(tokens)-n+1))
+            
+            orig_tokens = get_ngrams(original_text)
+            repr_tokens = get_ngrams(rephrased_text)
+            
+        else:
+            # Default to token-level
+            orig_tokens = set(original_text.lower().split())
+            repr_tokens = set(rephrased_text.lower().split())
+        
+        # Calculate Jaccard similarity
+        intersection = len(orig_tokens.intersection(repr_tokens))
+        union = len(orig_tokens.union(repr_tokens))
+        
+        jaccard_score = intersection / union if union > 0 else 0.0
+        
+        return jaccard_score
+        
+    except Exception as e:
+        print(f"Error calculating Jaccard score: {e}")
+        return 0.0
+
+def calculate_comprehensive_jaccard_scores(original_text, rephrased_text):
+    """
+    Calculate multiple Jaccard similarity scores for comprehensive analysis.
+    
+    Returns:
+        Dict with different Jaccard similarity measurements
+    """
+    scores = {}
+    
+    # Token-level Jaccard similarity
+    scores['jaccard_token'] = calculate_jaccard_score(original_text, rephrased_text, mode='token')
+    
+    # Character-level Jaccard similarity  
+    scores['jaccard_char'] = calculate_jaccard_score(original_text, rephrased_text, mode='char')
+    
+    # N-gram level Jaccard similarity
+    scores['jaccard_bigram'] = calculate_jaccard_score(original_text, rephrased_text, mode='ngram')
+    
+    # Average Jaccard score across methods
+    jaccard_values = [scores['jaccard_token'], scores['jaccard_char'], scores['jaccard_bigram']]
+    scores['jaccard_average'] = np.mean(jaccard_values)
+    
+    return scores
+
+# ===== NEW: CONFUSION MATRIX FUNCTIONS =====
+def create_rejection_confusion_matrix(results, output_dir):
+    """
+    Create confusion matrix for rejection analysis.
+    True labels: 1 = should be answerable (kept), 0 = should be unanswerable (omitted)
+    Predicted labels: 1 = model can answer, 0 = model cannot answer
+    """
+    print("Creating rejection confusion matrix...")
+    
+    try:
+        all_true_labels = []
+        all_pred_labels = []
+        model_data = {}
+        
+        for result in results:
+            if 'llm_qa_results' not in result or 'validation_scores' not in result:
+                continue
+                
+            model_name = result['llm_name']
+            if model_name not in model_data:
+                model_data[model_name] = {'true_labels': [], 'pred_labels': []}
+            
+            # Get kept questions results
+            kept_qa_results = result['llm_qa_results']
+            kept_answerability = kept_qa_results.get('answerability', [])
+            
+            # Get omitted questions results (from validation scores)
+            validation_scores = result['validation_scores']
+            num_omitted = validation_scores.get('num_omitted_questions', 0)
+            num_omitted_unanswerable = validation_scores.get('num_omitted_unanswerable', 0)
+            
+            # Add kept questions (should be answerable = 1)
+            for is_answerable in kept_answerability:
+                true_label = 1  # Should be answerable (kept)
+                pred_label = 1 if is_answerable else 0  # Model's prediction
+                
+                all_true_labels.append(true_label)
+                all_pred_labels.append(pred_label)
+                model_data[model_name]['true_labels'].append(true_label)
+                model_data[model_name]['pred_labels'].append(pred_label)
+            
+            # Add omitted questions (should be unanswerable = 0)
+            if num_omitted > 0:
+                # Add unanswerable omitted questions
+                for _ in range(num_omitted_unanswerable):
+                    true_label = 0  # Should be unanswerable (omitted)
+                    pred_label = 0  # Model correctly couldn't answer
+                    
+                    all_true_labels.append(true_label)
+                    all_pred_labels.append(pred_label)
+                    model_data[model_name]['true_labels'].append(true_label)
+                    model_data[model_name]['pred_labels'].append(pred_label)
+                
+                # Add answerable omitted questions (model failed to reject)
+                num_omitted_answerable = num_omitted - num_omitted_unanswerable
+                for _ in range(num_omitted_answerable):
+                    true_label = 0  # Should be unanswerable (omitted)
+                    pred_label = 1  # Model incorrectly could answer
+                    
+                    all_true_labels.append(true_label)
+                    all_pred_labels.append(pred_label)
+                    model_data[model_name]['true_labels'].append(true_label)
+                    model_data[model_name]['pred_labels'].append(pred_label)
+        
+        if not all_true_labels:
+            print("No data available for confusion matrix")
+            return
+        
+        # Create overall confusion matrix
+        cm_overall = confusion_matrix(all_true_labels, all_pred_labels)
+        
+        # Plot overall confusion matrix
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(cm_overall, annot=True, fmt='d', cmap='Blues', 
+                   xticklabels=['Cannot Answer', 'Can Answer'],
+                   yticklabels=['Should be Unanswerable (Omitted)', 'Should be Answerable (Kept)'])
+        plt.title('Overall Rejection Confusion Matrix', fontsize=16, fontweight='bold')
+        plt.xlabel('Model Prediction', fontsize=12)
+        plt.ylabel('True Label', fontsize=12)
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'rejection_confusion_matrix_overall.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # Create per-model confusion matrices
+        fig, axes = plt.subplots(1, len(model_data), figsize=(6*len(model_data), 5))
+        if len(model_data) == 1:
+            axes = [axes]
+        
+        for idx, (model_name, data) in enumerate(model_data.items()):
+            if len(data['true_labels']) == 0:
+                continue
+                
+            cm_model = confusion_matrix(data['true_labels'], data['pred_labels'])
+            
+            sns.heatmap(cm_model, annot=True, fmt='d', cmap='Blues', ax=axes[idx],
+                       xticklabels=['Cannot Answer', 'Can Answer'],
+                       yticklabels=['Should be Unanswerable', 'Should be Answerable'])
+            axes[idx].set_title(f'{model_name}', fontsize=14, fontweight='bold')
+            axes[idx].set_xlabel('Model Prediction')
+            if idx == 0:
+                axes[idx].set_ylabel('True Label')
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'rejection_confusion_matrix_by_model.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # Print classification report
+        print("\n=== REJECTION CLASSIFICATION REPORT ===")
+        report = classification_report(all_true_labels, all_pred_labels, 
+                                     target_names=['Should be Unanswerable (Omitted)', 'Should be Answerable (Kept)'])
+        print(report)
+        
+        # Save detailed metrics
+        with open(os.path.join(output_dir, 'rejection_classification_report.txt'), 'w') as f:
+            f.write("REJECTION CLASSIFICATION REPORT\n")
+            f.write("================================\n\n")
+            f.write("True labels: 1 = should be answerable (kept), 0 = should be unanswerable (omitted)\n")
+            f.write("Predicted labels: 1 = model can answer, 0 = model cannot answer\n\n")
+            f.write(report)
+        
+        print("Confusion matrices saved to output directory")
+        
+    except Exception as e:
+        print(f"Error creating confusion matrix: {e}")
 
 # ===== AZURE AI FUNCTIONS =====
 def get_azure_ai_inference_client(llm_config):
@@ -222,8 +432,113 @@ def _generate_hf_response(model, tokenizer, prompt_text, max_new_tokens, tempera
 def load_official_squad_json(file_path):
     try:
         with open(file_path, 'r', encoding='utf-8') as f: 
-            squad_data = json.load(f)
+            json_data = json.load(f)
         
+        processed_data = []
+        
+        # Handle both list format and single object format
+        if isinstance(json_data, dict):
+            # If it's a single object, wrap it in a list
+            json_data = [json_data] 
+        elif isinstance(json_data, dict) and 'data' in json_data:
+            # If it's the old SQuAD format, handle it
+            return load_original_squad_format(json_data)
+        
+        for entry_idx, entry in enumerate(json_data):
+            title = entry.get('title', f'Unknown_Title_{entry_idx}')
+            context = entry.get('full_context', '')
+            questions_list = entry.get('questions_details', [])
+            
+            if not context or not questions_list:
+                continue
+            
+            # Filter for answerable questions only
+            answerable_questions = []
+            for q_idx, qa in enumerate(questions_list):
+                if not qa.get('is_impossible', False) and qa.get('question') and qa.get('answers_text'):
+                    answerable_questions.append({
+                        'question': qa['question'], 
+                        'original_answers': qa.get('answers_text', []), 
+                        'id': qa.get('id', f"{title}_q{q_idx}")
+                    })
+            
+            if answerable_questions:
+                processed_data.append({
+                    "entry_id": f"{title}_{entry_idx}", 
+                    "title": title, 
+                    "context": context, 
+                    "answerable_question_objects": answerable_questions
+                })
+        
+        print(f"Loaded {len(processed_data)} entries from JSON file")
+        print(f"Sample entry: {processed_data[0]['title'] if processed_data else 'None'}")
+        return processed_data
+        
+    except Exception as e: 
+        print(f"Error loading JSON data: {e}")
+        return None
+
+def create_sample_custom_json(output_path='./data/sample_custom_format.json'):
+    """
+    Create a sample JSON file in the new custom format to help users understand the structure.
+    """
+    sample_data = [
+        {
+            "title": "Sample_Topic_1",
+            "full_context": "This is a sample context paragraph containing information about a topic. It includes various facts and details that can be used to answer questions. The paragraph should be substantial enough to contain information for multiple questions.",
+            "questions_details": [
+                {
+                    "id": "sample_q1",
+                    "question": "What is the main topic of this paragraph?",
+                    "answers_text": ["sample topic", "topic"],
+                    "is_impossible": False
+                },
+                {
+                    "id": "sample_q2", 
+                    "question": "What type of information does the paragraph contain?",
+                    "answers_text": ["facts and details", "various facts"],
+                    "is_impossible": False
+                },
+                {
+                    "id": "sample_q3_impossible",
+                    "question": "What color is the paragraph?",
+                    "answers_text": [],
+                    "is_impossible": True
+                }
+            ]
+        },
+        {
+            "title": "Sample_Topic_2", 
+            "full_context": "Another example paragraph with different content. This paragraph discusses a completely different subject matter and provides unique information that would require different questions to extract the key details.",
+            "questions_details": [
+                {
+                    "id": "sample_q4",
+                    "question": "What does this paragraph discuss?",
+                    "answers_text": ["different subject matter", "completely different subject"],
+                    "is_impossible": False
+                },
+                {
+                    "id": "sample_q5",
+                    "question": "What type of information does this paragraph provide?",
+                    "answers_text": ["unique information"],
+                    "is_impossible": False
+                }
+            ]
+        }
+    ]
+    
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(sample_data, f, indent=2, ensure_ascii=False)
+    
+    print(f"Sample custom format JSON created at: {output_path}")
+    return sample_data
+
+def load_original_squad_format(squad_data):
+    """
+    Fallback function to handle original SQuAD format for backward compatibility.
+    """
+    try:
         processed_data = []
         
         for topic_data in squad_data.get('data', []):
@@ -251,11 +566,48 @@ def load_official_squad_json(file_path):
                         "answerable_question_objects": answerable_questions
                     })
         
-        print(f"Loaded {len(processed_data)} entries from SQuAD")
+        print(f"Loaded {len(processed_data)} entries from original SQuAD format")
         return processed_data
         
     except Exception as e: 
-        print(f"Error loading SQuAD data: {e}")
+        print(f"Error loading original SQuAD data: {e}")
+        return None
+    """
+    Fallback function to handle original SQuAD format for backward compatibility.
+    """
+    try:
+        processed_data = []
+        
+        for topic_data in squad_data.get('data', []):
+            title = topic_data.get('title', 'Unknown_Title')
+            
+            for para_idx, paragraph in enumerate(topic_data.get('paragraphs', [])):
+                context = paragraph.get('context')
+                qas_list = paragraph.get('qas', [])
+                
+                answerable_questions = [
+                    {
+                        'question': qa['question'], 
+                        'original_answers': [ans['text'] for ans in qa.get('answers', [])], 
+                        'id': qa.get('id', f"{title}_p{para_idx}_q{i}")
+                    }
+                    for i, qa in enumerate(qas_list) 
+                    if not qa.get('is_impossible', False) and qa.get('question') and qa.get('answers')
+                ]
+                
+                if context and answerable_questions:
+                    processed_data.append({
+                        "entry_id": f"{title}_p{para_idx}", 
+                        "title": title, 
+                        "context": context, 
+                        "answerable_question_objects": answerable_questions
+                    })
+        
+        print(f"Loaded {len(processed_data)} entries from original SQuAD format")
+        return processed_data
+        
+    except Exception as e: 
+        print(f"Error loading original SQuAD data: {e}")
         return None
 
 # ===== TEXT GENERATION =====
@@ -493,7 +845,7 @@ def evaluate_with_llm_judge(original_text, rephrased_text, questions_to_keep_obj
     kept_q_list = [q_obj['question'] for q_obj in questions_to_keep_objs]
     
     rephrase_sys_prompt = "Rate (1-5, 5=best): Rephrased Text vs Original. Consider inclusion of keep questions, omission of omit questions, coherence. ONLY provide the score."
-    rephrase_user_prompt = f"Original:\n{original_text[:300]}...\n\nRephrased:\n{rephrased_text[:300]}...\n\nKeep Info For:\n{chr(10).join(f'- {q[:70]}...' for q in kept_q_list)}\n\nOmit Info For:\n{chr(10).join(f'- {q[:70]}...' for q in questions_to_omit_strings)}\n\nScore (1-5):"
+    rephrase_user_prompt = f"Original:\n{original_text}...\n\nRephrased:\n{rephrased_text}...\n\nKeep Info For:\n{chr(10).join(f'- {q}...' for q in kept_q_list)}\n\nOmit Info For:\n{chr(10).join(f'- {q}...' for q in questions_to_omit_strings)}\n\nScore (1-5):"
     
     ans_sys_prompt = "Rate LLM's answer vs SQuAD answer (1-5, 5=best). Consider correctness and equivalence. ONLY provide the score."
     
@@ -585,10 +937,9 @@ def evaluate_with_llm_judge(original_text, rephrased_text, questions_to_keep_obj
     return judge_scores
 
 def calculate_comprehensive_validation_scores(original_text, rephrased_text, q_keep_objects, q_omit_strings, 
-                                            llm_qa_results, llm_judge_eval_scores):
+                                            llm_qa_results, llm_judge_eval_scores, llm_config):
     """
-    Updated with corrected rejection accuracy calculation:
-    rejection_accuracy = (omitted questions that became unanswerable) / (total omitted questions)
+    Updated with corrected rejection accuracy calculation and Jaccard similarity scores.
     """
     scores = {}
     
@@ -596,7 +947,8 @@ def calculate_comprehensive_validation_scores(original_text, rephrased_text, q_k
     if not rephrased_text or rephrased_text.startswith("Error:") or "Model did not provide" in rephrased_text:
         error_metrics = ['rouge1_f', 'rougeL_f', 'sbert_similarity_context', 'bert_score_rephrased_vs_original_f1', 
                         'qa_inclusion_rate_by_aux_qa', 'llm_avg_answer_sbert_similarity_kept_q',
-                        'avg_qa_omission_success_rate', 'rejection_accuracy', 'len_o', 'len_r', 'len_ratio',
+                        'avg_qa_omission_success_rate', 'rejection_accuracy', 'jaccard_token', 'jaccard_char', 
+                        'jaccard_bigram', 'jaccard_average', 'len_o', 'len_r', 'len_ratio',
                         'judge_rephrase_quality_score', 'judge_kept_q_answer_correctness_score']
         for k in error_metrics: 
             scores[k] = 0.0
@@ -608,6 +960,10 @@ def calculate_comprehensive_validation_scores(original_text, rephrased_text, q_k
     # Extract answers and answerability predictions from new structure
     llm_answers_for_kept_qs = llm_qa_results.get('answers', [])
     kept_answerability_predictions = llm_qa_results.get('answerability', [])
+    
+    # Calculate Jaccard Similarity Scores
+    jaccard_scores = calculate_comprehensive_jaccard_scores(original_text, rephrased_text)
+    scores.update(jaccard_scores)
     
     # ROUGE scores
     try:
@@ -673,31 +1029,9 @@ def calculate_comprehensive_validation_scores(original_text, rephrased_text, q_k
         scores['llm_avg_answer_sbert_similarity_kept_q'] = 0.0
     
     # ===== CORRECTED REJECTION ACCURACY CALCULATION USING LLM =====
-    # Formula: (omitted questions that became unanswerable) / (total omitted questions)
-    
     if q_omit_strings:
-        # Use LLM to test omitted questions on rewritten text
-        omitted_unanswerable_count = 0
-        
-        # Get LLM's determination of which omitted questions are answerable
-        # We need to pass the current LLM config to the function
-        # For now, we'll use a global variable approach or pass it through the call stack
-        # Since this is minimal changes, we'll modify to get the config from the caller
-        
-        # Use the same LLM approach as for kept questions
-        # We need to get the LLM configuration - for minimal changes, we'll add it as a parameter
-        # But since we want minimal changes, let's use the global current model if available
-        
-        # Create a dummy llm_config for the current model
-        if current_hf_model and current_hf_tokenizer:
-            # Use local HF model
-            dummy_llm_config = {"type": "hf_local"}
-        else:
-            # Use Azure AI (assuming it's available from the global config)
-            dummy_llm_config = JUDGE_LLM_CONFIG
-        
-        # Get LLM answers for omitted questions
-        llm_omit_results = get_llm_answers_from_rephrased_text(rephrased_text, q_omit_strings, dummy_llm_config)
+        # Get LLM answers for omitted questions to test rejection
+        llm_omit_results = get_llm_answers_from_rephrased_text(rephrased_text, q_omit_strings, llm_config)
         omit_answerability = llm_omit_results.get('answerability', [])
         
         # Count how many omitted questions became unanswerable
@@ -753,6 +1087,9 @@ def generate_summary_plots(results_file_path, output_dir):
             print("Error: 'validation_scores' missing.")
             return
         
+        # Create confusion matrix
+        create_rejection_confusion_matrix(results, output_dir)
+        
         # Normalize validation scores
         scores_df = pd.json_normalize(df['validation_scores'].apply(lambda x: x if isinstance(x, dict) else {}))
         df = pd.concat([df.drop(columns=['validation_scores']), scores_df], axis=1)
@@ -761,7 +1098,8 @@ def generate_summary_plots(results_file_path, output_dir):
         score_columns = [
             'rouge1_f', 'rougeL_f', 'bert_score_rephrased_vs_original_f1', 'sbert_similarity_context',
             'qa_inclusion_rate_by_aux_qa', 'llm_avg_answer_sbert_similarity_kept_q',
-            'avg_qa_omission_success_rate', 'rejection_accuracy',
+            'avg_qa_omission_success_rate', 'rejection_accuracy', 'jaccard_token', 'jaccard_char',
+            'jaccard_bigram', 'jaccard_average',
             'judge_rephrase_quality_score', 'judge_kept_q_answer_correctness_score', 'len_ratio'
         ]
         
@@ -783,16 +1121,23 @@ def generate_summary_plots(results_file_path, output_dir):
         'llm_avg_answer_sbert_similarity_kept_q': "LLM Answer Similarity",
         'rejection_accuracy': 'Rejection Accuracy',
         'avg_qa_omission_success_rate': 'Omission Success Rate',
+        'jaccard_token': 'Jaccard Token Similarity',
+        'jaccard_char': 'Jaccard Character Similarity',
+        'jaccard_bigram': 'Jaccard Bigram Similarity',
+        'jaccard_average': 'Jaccard Average Similarity',
         'judge_rephrase_quality_score': 'Judge: Rephrase Quality',
         'judge_kept_q_answer_correctness_score': "Judge: Answer Correctness"
     }
     
     sns.set_theme(style="whitegrid")
     has_strategies = 'omission_strategy' in df.columns and df['omission_strategy'].nunique() > 1
+    has_rephrase_type = 'rephrase_type' in df.columns and df['rephrase_type'].nunique() > 1
     
     print(f"Data: {len(df)} entries, LLMs: {df['llm_name'].unique().tolist()}")
     if has_strategies:
         print(f"Strategies: {df['omission_strategy'].unique().tolist()}")
+    if has_rephrase_type:
+        print(f"Rephrase Types: {df['rephrase_type'].unique().tolist()}")
 
     # Print rejection accuracy summary
     print("\n=== CORRECTED REJECTION ACCURACY SUMMARY ===")
@@ -801,6 +1146,21 @@ def generate_summary_plots(results_file_path, output_dir):
         if 'rejection_accuracy' in llm_data.columns:
             avg_rejection = llm_data['rejection_accuracy'].mean()
             print(f"{llm_name}: {avg_rejection:.3f} avg rejection accuracy")
+
+    # Print Jaccard Score summary
+    print("\n=== JACCARD SIMILARITY SUMMARY ===")
+    for llm_name in df['llm_name'].unique():
+        llm_data = df[df['llm_name'] == llm_name]
+        if 'jaccard_average' in llm_data.columns:
+            avg_jaccard = llm_data['jaccard_average'].mean()
+            print(f"{llm_name}: {avg_jaccard:.3f} avg Jaccard similarity")
+            
+            # Print detailed Jaccard scores
+            if 'jaccard_token' in llm_data.columns:
+                token_jaccard = llm_data['jaccard_token'].mean()
+                char_jaccard = llm_data['jaccard_char'].mean()
+                bigram_jaccard = llm_data['jaccard_bigram'].mean()
+                print(f"  Token: {token_jaccard:.3f}, Char: {char_jaccard:.3f}, Bigram: {bigram_jaccard:.3f}")
 
     # LLM Performance Aggregation
     print("Generating LLM performance plots...")
@@ -842,28 +1202,28 @@ def generate_summary_plots(results_file_path, output_dir):
         plt.savefig(os.path.join(output_dir, f'llm_performance_{metric}.png'), dpi=300, bbox_inches='tight')
         plt.close()
 
-    # Strategy Performance Aggregation (if applicable)
-    if has_strategies:
-        print("Generating strategy performance plots...")
+    # Rephrase Type Performance (if applicable)
+    if has_rephrase_type:
+        print("Generating rephrase type performance plots...")
         for metric, label in metrics_labels.items():
             if metric not in df.columns:
                 continue
             
-            strategy_stats = df.groupby('omission_strategy')[metric].agg(['mean', 'std', 'count']).reset_index()
-            strategy_stats = strategy_stats.sort_values('mean', ascending=False)
+            rephrase_stats = df.groupby('rephrase_type')[metric].agg(['mean', 'std', 'count']).reset_index()
+            rephrase_stats = rephrase_stats.sort_values('mean', ascending=False)
             
             plt.figure(figsize=(10, 8))
             bars = plt.bar(
-                strategy_stats['omission_strategy'], 
-                strategy_stats['mean'], 
-                yerr=strategy_stats['std'], 
+                rephrase_stats['rephrase_type'], 
+                rephrase_stats['mean'], 
+                yerr=rephrase_stats['std'], 
                 capsize=5, 
-                color=sns.color_palette("plasma", len(strategy_stats)),
+                color=sns.color_palette("Set2", len(rephrase_stats)),
                 alpha=0.8, 
                 edgecolor='black'
             )
             
-            for bar, mean_val, count in zip(bars, strategy_stats['mean'], strategy_stats['count']):
+            for bar, mean_val, count in zip(bars, rephrase_stats['mean'], rephrase_stats['count']):
                 plt.text(
                     bar.get_x() + bar.get_width()/2, 
                     bar.get_height() + 0.01,
@@ -871,27 +1231,87 @@ def generate_summary_plots(results_file_path, output_dir):
                     ha='center', va='bottom', fontweight='bold'
                 )
             
-            plt.title(f'{label} - Strategy Performance', fontsize=16, fontweight='bold')
+            plt.title(f'{label} - Rephrase Type Performance', fontsize=16, fontweight='bold')
             plt.ylabel(f'{label} (Mean ± Std)', fontsize=12)
-            plt.xlabel('Omission Strategy', fontsize=12)
+            plt.xlabel('Rephrase Type', fontsize=12)
             plt.xticks(rotation=45, ha='right')
             plt.grid(axis='y', alpha=0.3)
             plt.tight_layout()
             
-            plt.savefig(os.path.join(output_dir, f'strategy_performance_{metric}.png'), dpi=300, bbox_inches='tight')
+            plt.savefig(os.path.join(output_dir, f'rephrase_type_performance_{metric}.png'), dpi=300, bbox_inches='tight')
             plt.close()
 
-    # Create Table 4 style summary for validation results
-    print("Generating Table 4 style validation summary...")
-    table4_metrics = {
+    # Questions Removed Performance Analysis
+    if has_strategies:
+        print("Generating questions removed performance plots...")
+        for metric, label in requested_metrics.items():
+            if metric not in df.columns:
+                continue
+            
+            # Create data for plotting by questions removed
+            plot_data = []
+            for _, row in df.iterrows():
+                strategy = row.get('omission_strategy', 'unknown')
+                questions_removed = "1 Question" if "omit_1" in strategy else "2 Questions" if "omit_2" in strategy else "Unknown"
+                plot_data.append({
+                    'Questions_Removed': questions_removed,
+                    'Model': row['llm_name'],
+                    'Rephrase_Type': row.get('rephrase_type', 'original'),
+                    'Score': row[metric]
+                })
+            
+            plot_df = pd.DataFrame(plot_data)
+            
+            plt.figure(figsize=(12, 8))
+            
+            if has_rephrase_type:
+                # Group by both questions removed and rephrase type
+                sns.barplot(data=plot_df, x='Questions_Removed', y='Score', hue='Rephrase_Type', 
+                           ci='sd', capsize=0.1, palette='Set2')
+                plt.title(f'{label} by Questions Removed and Rephrase Type', fontsize=16, fontweight='bold')
+                plt.legend(title='Rephrase Type')
+            else:
+                # Group by questions removed only
+                sns.barplot(data=plot_df, x='Questions_Removed', y='Score', ci='sd', capsize=0.1, 
+                           palette='viridis')
+                plt.title(f'{label} by Questions Removed', fontsize=16, fontweight='bold')
+            
+            plt.ylabel(f'{label} (Mean ± Std)', fontsize=12)
+            plt.xlabel('Questions Removed', fontsize=12)
+            plt.grid(axis='y', alpha=0.3)
+            plt.tight_layout()
+            
+            plt.savefig(os.path.join(output_dir, f'questions_removed_performance_{metric}.png'), dpi=300, bbox_inches='tight')
+            plt.close()
+
+    # Create enhanced summary tables
+    print("Generating enhanced validation summary...")
+    table_metrics = {
         'rejection_accuracy': 'Rejection Accuracy',
+        'jaccard_token': 'Jaccard Token',
+        'jaccard_average': 'Jaccard Average',
         'bert_score_rephrased_vs_original_f1': 'BERTScore',
         'sbert_similarity_context': 'SBERT Similarity', 
         'judge_rephrase_quality_score': 'LLM Judge'
     }
     
-    # Create summary table similar to Table 4 in the paper
-    table4_data = []
+    # Create the specific requested table with key metrics including Jaccard Token
+    print("Generating requested metrics table...")
+    requested_metrics = {
+        'bert_score_rephrased_vs_original_f1': 'BERTScore F1',
+        'sbert_similarity_context': 'SBERT Similarity',
+        'llm_avg_answer_sbert_similarity_kept_q': 'LLM Answer Similarity',
+        'rejection_accuracy': 'Rejection Accuracy',
+        'judge_rephrase_quality_score': 'Judge: Rephrase Quality',
+        'judge_kept_q_answer_correctness_score': 'Judge: Answer Correctness',
+        'jaccard_token': 'Jaccard Token'
+    }
+    
+    # Create comprehensive table by model and omission strategy (questions removed)
+    comprehensive_table_data = []
+    
+    print("\n=== COMPREHENSIVE RESULTS BY MODEL AND QUESTIONS REMOVED ===")
+    
     for llm_name in df['llm_name'].unique():
         llm_data = df[df['llm_name'] == llm_name]
         
@@ -899,74 +1319,149 @@ def generate_summary_plots(results_file_path, output_dir):
             for strategy in df['omission_strategy'].unique():
                 strategy_data = llm_data[llm_data['omission_strategy'] == strategy]
                 if not strategy_data.empty:
-                    row = {'Model': llm_name, 'Strategy': strategy}
-                    for metric, label in table4_metrics.items():
-                        if metric in strategy_data.columns:
-                            row[label] = f"{strategy_data[metric].mean():.3f}"
-                        else:
-                            row[label] = "N/A"
-                    table4_data.append(row)
+                    # Extract number of questions removed from strategy name
+                    questions_removed = "1" if "omit_1" in strategy else "2" if "omit_2" in strategy else "Unknown"
+                    
+                    if has_rephrase_type:
+                        for rephrase_type in df['rephrase_type'].unique():
+                            rephrase_data = strategy_data[strategy_data['rephrase_type'] == rephrase_type]
+                            if not rephrase_data.empty:
+                                row = {
+                                    'Model': llm_name, 
+                                    'Questions_Removed': questions_removed,
+                                    'Rephrase_Type': rephrase_type,
+                                    'Count': len(rephrase_data)
+                                }
+                                for metric, label in requested_metrics.items():
+                                    if metric in rephrase_data.columns:
+                                        row[label] = f"{rephrase_data[metric].mean():.3f}"
+                                    else:
+                                        row[label] = "N/A"
+                                comprehensive_table_data.append(row)
+                    else:
+                        row = {
+                            'Model': llm_name, 
+                            'Questions_Removed': questions_removed,
+                            'Count': len(strategy_data)
+                        }
+                        for metric, label in requested_metrics.items():
+                            if metric in strategy_data.columns:
+                                row[label] = f"{strategy_data[metric].mean():.3f}"
+                            else:
+                                row[label] = "N/A"
+                        comprehensive_table_data.append(row)
         else:
-            row = {'Model': llm_name}
-            for metric, label in table4_metrics.items():
+            # No strategies, just by model
+            row = {'Model': llm_name, 'Count': len(llm_data)}
+            for metric, label in requested_metrics.items():
                 if metric in llm_data.columns:
                     row[label] = f"{llm_data[metric].mean():.3f}"
                 else:
                     row[label] = "N/A"
-            table4_data.append(row)
+            comprehensive_table_data.append(row)
     
-    if table4_data:
-        table4_df = pd.DataFrame(table4_data)
-        print("\n=== TABLE 4 STYLE VALIDATION RESULTS ===")
-        print(table4_df.to_string(index=False))
-        table4_df.to_csv(os.path.join(output_dir, 'table4_validation_results.csv'), index=False)
-
-    # Summary Dashboard
-    print("Generating summary dashboard...")
-    key_metrics = ['bert_score_rephrased_vs_original_f1', 'sbert_similarity_context', 'llm_avg_answer_sbert_similarity_kept_q', 
-                   'rejection_accuracy', 'judge_rephrase_quality_score', 'judge_kept_q_answer_correctness_score']
-    available_metrics = [m for m in key_metrics if m in df.columns]
+    if comprehensive_table_data:
+        comprehensive_df = pd.DataFrame(comprehensive_table_data)
+        print(comprehensive_df.to_string(index=False))
+        comprehensive_df.to_csv(os.path.join(output_dir, 'comprehensive_results_by_questions_removed.csv'), index=False)
+        print(f"\nComprehensive table saved to: comprehensive_results_by_questions_removed.csv")
     
-    if available_metrics:
-        # Create CSV summaries
-        llm_summary = pd.DataFrame()
-        for metric in available_metrics:
-            llm_summary[metrics_labels.get(metric, metric)] = df.groupby('llm_name')[metric].mean()
+    # Create summary by questions removed
+    if has_strategies:
+        print("\n=== RESULTS BY NUMBER OF QUESTIONS REMOVED ===")
+        questions_removed_summary = []
         
-        print("\n=== LLM PERFORMANCE SUMMARY ===")
-        print(llm_summary.round(3))
-        llm_summary.to_csv(os.path.join(output_dir, 'llm_performance_summary.csv'))
-        
-        if has_strategies:
-            strategy_summary = pd.DataFrame()
-            for metric in available_metrics:
-                strategy_summary[metrics_labels.get(metric, metric)] = df.groupby('omission_strategy')[metric].mean()
+        for strategy in df['omission_strategy'].unique():
+            strategy_data = df[df['omission_strategy'] == strategy]
+            questions_removed = "1" if "omit_1" in strategy else "2" if "omit_2" in strategy else "Unknown"
             
-            print("\n=== STRATEGY PERFORMANCE SUMMARY ===")
-            print(strategy_summary.round(3))
-            strategy_summary.to_csv(os.path.join(output_dir, 'strategy_performance_summary.csv'))
+            summary_row = {
+                'Questions_Removed': questions_removed,
+                'Strategy': strategy,
+                'Total_Entries': len(strategy_data)
+            }
+            
+            for metric, label in requested_metrics.items():
+                if metric in strategy_data.columns:
+                    summary_row[label] = f"{strategy_data[metric].mean():.3f} ± {strategy_data[metric].std():.3f}"
+                else:
+                    summary_row[label] = "N/A"
+            
+            questions_removed_summary.append(summary_row)
+        
+        if questions_removed_summary:
+            questions_removed_df = pd.DataFrame(questions_removed_summary)
+            print(questions_removed_df.to_string(index=False))
+            questions_removed_df.to_csv(os.path.join(output_dir, 'results_by_questions_removed.csv'), index=False)
+            print(f"\nQuestions removed summary saved to: results_by_questions_removed.csv")
     
-    # Final summary
-    print("\n" + "="*60)
-    print("PERFORMANCE SUMMARY")
-    print("="*60)
+    # Create summary table
+    table_data = []
+    for llm_name in df['llm_name'].unique():
+        llm_data = df[df['llm_name'] == llm_name]
+        
+        if has_rephrase_type:
+            for rephrase_type in df['rephrase_type'].unique():
+                rephrase_data = llm_data[llm_data['rephrase_type'] == rephrase_type]
+                if not rephrase_data.empty:
+                    row = {'Model': llm_name, 'Rephrase_Type': rephrase_type}
+                    for metric, label in table_metrics.items():
+                        if metric in rephrase_data.columns:
+                            row[label] = f"{rephrase_data[metric].mean():.3f}"
+                        else:
+                            row[label] = "N/A"
+                    table_data.append(row)
+        elif has_strategies:
+            for strategy in df['omission_strategy'].unique():
+                strategy_data = llm_data[llm_data['omission_strategy'] == strategy]
+                if not strategy_data.empty:
+                    row = {'Model': llm_name, 'Strategy': strategy}
+                    for metric, label in table_metrics.items():
+                        if metric in strategy_data.columns:
+                            row[label] = f"{strategy_data[metric].mean():.3f}"
+                        else:
+                            row[label] = "N/A"
+                    table_data.append(row)
+        else:
+            row = {'Model': llm_name}
+            for metric, label in table_metrics.items():
+                if metric in llm_data.columns:
+                    row[label] = f"{llm_data[metric].mean():.3f}"
+                else:
+                    row[label] = "N/A"
+            table_data.append(row)
     
-    if len(df['llm_name'].unique()) > 1:
-        print("\nBest LLM by metric:")
-        for metric in available_metrics:
-            best_llm = df.groupby('llm_name')[metric].mean().idxmax()
-            best_score = df.groupby('llm_name')[metric].mean().max()
-            print(f"  {metrics_labels.get(metric, metric)}: {best_llm} ({best_score:.3f})")
+    if table_data:
+        table_df = pd.DataFrame(table_data)
+        print("\n=== ENHANCED VALIDATION RESULTS ===")
+        print(table_df.to_string(index=False))
+        table_df.to_csv(os.path.join(output_dir, 'enhanced_validation_results.csv'), index=False)
     
-    if has_strategies and len(df['omission_strategy'].unique()) > 1:
-        print("\nBest strategy by metric:")
-        for metric in available_metrics:
-            best_strategy = df.groupby('omission_strategy')[metric].mean().idxmax()
-            best_score = df.groupby('omission_strategy')[metric].mean().max()
-            print(f"  {metrics_labels.get(metric, metric)}: {best_strategy} ({best_score:.3f})")
+    # Create model comparison table for requested metrics
+    print("\n=== MODEL COMPARISON - REQUESTED METRICS ===")
+    model_comparison_data = []
     
-    print("="*60)
-    print(f"Plots saved to: {output_dir}")
+    for llm_name in df['llm_name'].unique():
+        llm_data = df[df['llm_name'] == llm_name]
+        row = {'Model': llm_name, 'Total_Entries': len(llm_data)}
+        
+        for metric, label in requested_metrics.items():
+            if metric in llm_data.columns:
+                mean_score = llm_data[metric].mean()
+                std_score = llm_data[metric].std()
+                row[label] = f"{mean_score:.3f} ± {std_score:.3f}"
+            else:
+                row[label] = "N/A"
+        
+        model_comparison_data.append(row)
+    
+    if model_comparison_data:
+        model_comparison_df = pd.DataFrame(model_comparison_data)
+        print(model_comparison_df.to_string(index=False))
+        model_comparison_df.to_csv(os.path.join(output_dir, 'model_comparison_requested_metrics.csv'), index=False)
+        print(f"\nModel comparison saved to: model_comparison_requested_metrics.csv")
+
+    print(f"\nPlots and confusion matrix saved to: {output_dir}")
 
 # ===== MAIN FUNCTION =====
 def main():
@@ -975,9 +1470,17 @@ def main():
     
     # Setup
     ensure_dir(PLOTS_OUTPUT_DIR)
+    ensure_dir('./data')  # Ensure data directory exists
     download_nltk_punkt_once()
     load_qa_pipeline(device)
     load_sbert_model()
+    
+    # Create sample custom format file for reference
+    if USE_CUSTOM_FORMAT and not os.path.exists(DATA_FILE_PATH):
+        print(f"Custom format file not found. Creating sample file...")
+        create_sample_custom_json('./data/sample_custom_format.json')
+        print(f"Please replace the sample data with your actual data in: {DATA_FILE_PATH}")
+        return
 
     # Test Azure connections
     print("\n=== Testing Azure AI Connections ===")
@@ -1015,6 +1518,7 @@ def main():
                         - The rewritten passage should be comprehensive enough to answer all "keep" questions
                         - Information relevant to "omit" questions should be removed, obscured, or replaced with vague references
                         - Maintain the general topic and context of the original passage
+                        - DO NOT explicitly mention that information has been omitted
                         - Ensure smooth transitions and logical flow in the rewritten text
                         - Do not explicitly mention that information has been omitted"""
 
@@ -1028,19 +1532,24 @@ def main():
                               Please provide the rewritten passage:"""
 
     # Load data
-    print(f"Loading SQuAD data from: {SQUAD_JSON_FILE_PATH}")
-    squad_data = load_official_squad_json(SQUAD_JSON_FILE_PATH)
-    if not squad_data:
-        print("Failed to load SQuAD data. Exiting.")
+    print(f"Loading data from: {DATA_FILE_PATH}")
+    if USE_CUSTOM_FORMAT:
+        print("Using custom JSON format (Zelda-style)")
+    else:
+        print("Using original SQuAD format")
+        
+    json_data = load_official_squad_json(DATA_FILE_PATH)
+    if not json_data:
+        print("Failed to load data. Exiting.")
         return
     
-    entries = squad_data[:MAX_TEXTS_TO_PROCESS]
+    entries = json_data[:MAX_TEXTS_TO_PROCESS]
     print(f"Processing {len(entries)} entries with {len(LLM_CONFIGURATIONS)} models\n")
 
     # Processing
     results = []
     omission_strategies = {
-        "omit_1_question": {"num_to_omit": 1, "min_questions": 2},
+        "omit_1_question": {"num_to_omit": 1, "min_questions": 3},
         "omit_2_questions": {"num_to_omit": 2, "min_questions": 3}
     }
     
@@ -1102,7 +1611,7 @@ def main():
                 random.shuffle(questions)
                 num_omit = strategy_config["num_to_omit"]
                 omit_questions = questions[:num_omit]
-                keep_questions = questions[num_omit:num_omit+random.randint(1,2)]
+                keep_questions = questions[num_omit:]
                 
                 if not keep_questions:
                     continue
@@ -1110,17 +1619,18 @@ def main():
                 omit_q_strings = [q["question"] for q in omit_questions]
                 keep_q_strings = [q["question"] for q in keep_questions]
                 
-                # Generate rewrite
+                # ===== ORIGINAL REPHRASING =====
+                print(f"      🔄 Original rephrasing (keep {len(keep_questions)}, omit {len(omit_questions)})")
                 if llm_type == "hf_local":
                     rewritten = generate_rewrite_hf_local(context, keep_q_strings, omit_q_strings, system_prompt, user_prompt_template)
                 else:
                     rewritten = generate_rewrite_azure_ai_inference(context, keep_q_strings, omit_q_strings, llm_config, system_prompt, user_prompt_template)
                 
                 if rewritten.startswith("Error:"):
-                    print(f"      ❌ Rewrite failed: {rewritten}")
+                    print(f"        ❌ Original rewrite failed: {rewritten}")
                     continue
                 else:
-                    print(f"      ✅ Rewrite successful")
+                    print(f"        ✅ Original rewrite successful")
                 
                 # Get LLM answers with answerability detection
                 llm_qa_results = get_llm_answers_from_rephrased_text(rewritten, keep_q_strings, llm_config)
@@ -1128,13 +1638,14 @@ def main():
                 # Judge evaluation
                 judge_scores = evaluate_with_llm_judge(context, rewritten, keep_questions, omit_q_strings, llm_qa_results, JUDGE_LLM_CONFIG)
                 
-                # Validation scores with corrected rejection accuracy
-                validation_scores = calculate_comprehensive_validation_scores(context, rewritten, keep_questions, omit_q_strings, llm_qa_results, judge_scores)
+                # Validation scores with corrected rejection accuracy and Jakarta score
+                validation_scores = calculate_comprehensive_validation_scores(context, rewritten, keep_questions, omit_q_strings, llm_qa_results, judge_scores, llm_config)
                 
-                # Store result
-                result = {
+                # Store original rephrasing result
+                result_original = {
                     "llm_name": llm_name, 
                     "omission_strategy": strategy_name,
+                    "rephrase_type": "original",  # NEW: Track rephrasing type
                     "original_title": title, 
                     "original_context_snippet": context,
                     "questions_to_keep": keep_q_strings,
@@ -1146,13 +1657,61 @@ def main():
                     "entry_id": entry.get("entry_id", "N/A"),
                     "status": "SUCCESS"
                 }
-                results.append(result)
+                results.append(result_original)
                 strategy_results += 1
                 model_results += 1
                 
+                # ===== REVERSE REPHRASING =====
+                print(f"      🔄 Reverse rephrasing (keep {len(omit_questions)}, omit {len(keep_questions)})")
+                
+                # Swap the questions: originally omitted become kept, originally kept become omitted
+                reverse_keep_q_strings = omit_q_strings  # Previously omitted questions
+                reverse_omit_q_strings = keep_q_strings  # Previously kept questions
+                reverse_keep_questions = omit_questions  # Question objects for previously omitted
+                reverse_omit_questions = keep_questions  # Question objects for previously kept
+                
+                if llm_type == "hf_local":
+                    reverse_rewritten = generate_rewrite_hf_local(context, reverse_keep_q_strings, reverse_omit_q_strings, system_prompt, user_prompt_template)
+                else:
+                    reverse_rewritten = generate_rewrite_azure_ai_inference(context, reverse_keep_q_strings, reverse_omit_q_strings, llm_config, system_prompt, user_prompt_template)
+                
+                if reverse_rewritten.startswith("Error:"):
+                    print(f"        ❌ Reverse rewrite failed: {reverse_rewritten}")
+                else:
+                    print(f"        ✅ Reverse rewrite successful")
+                    
+                    # Get LLM answers for reverse rephrasing
+                    reverse_llm_qa_results = get_llm_answers_from_rephrased_text(reverse_rewritten, reverse_keep_q_strings, llm_config)
+                    
+                    # Judge evaluation for reverse rephrasing
+                    reverse_judge_scores = evaluate_with_llm_judge(context, reverse_rewritten, reverse_keep_questions, reverse_omit_q_strings, reverse_llm_qa_results, JUDGE_LLM_CONFIG)
+                    
+                    # Validation scores for reverse rephrasing
+                    reverse_validation_scores = calculate_comprehensive_validation_scores(context, reverse_rewritten, reverse_keep_questions, reverse_omit_q_strings, reverse_llm_qa_results, reverse_judge_scores, llm_config)
+                    
+                    # Store reverse rephrasing result
+                    result_reverse = {
+                        "llm_name": llm_name, 
+                        "omission_strategy": strategy_name,
+                        "rephrase_type": "reverse",  # NEW: Track rephrasing type
+                        "original_title": title, 
+                        "original_context_snippet": context,
+                        "questions_to_keep": reverse_keep_q_strings,
+                        "questions_to_omit": reverse_omit_q_strings,
+                        "llm_qa_results": reverse_llm_qa_results,
+                        "original_answers_for_kept_qs": {q['question']: q['original_answers'] for q in reverse_keep_questions},
+                        "rewritten_context": reverse_rewritten, 
+                        "validation_scores": reverse_validation_scores,
+                        "entry_id": entry.get("entry_id", "N/A") + "_reverse",
+                        "status": "SUCCESS"
+                    }
+                    results.append(result_reverse)
+                    strategy_results += 1
+                    model_results += 1
+                
                 # Save intermediate results
-                if len(results) % 5 == 0:
-                    with open('temp_results.json', 'w', encoding='utf-8') as f: 
+                if len(results) % 10 == 0:
+                    with open('temp_results_enhanced.json', 'w', encoding='utf-8') as f: 
                         json.dump(results, f, indent=2, ensure_ascii=False)
             
             print(f"    Strategy completed: {strategy_results} entries")
@@ -1171,30 +1730,43 @@ def main():
     
     if results:
         by_model = {}
+        by_rephrase_type = {}
         for result in results:
             model = result['llm_name']
+            rephrase_type = result.get('rephrase_type', 'unknown')
             by_model[model] = by_model.get(model, 0) + 1
+            by_rephrase_type[rephrase_type] = by_rephrase_type.get(rephrase_type, 0) + 1
         
         print("Results by model:")
         for model, count in by_model.items():
             print(f"  {model}: {count} entries")
         
-        # Print corrected rejection accuracy summary
-        print("\n=== CORRECTED REJECTION ACCURACY SUMMARY ===")
-        print("Formula: (Omitted Questions Made Unanswerable) / (Total Omitted Questions)")
+        print("Results by rephrase type:")
+        for rephrase_type, count in by_rephrase_type.items():
+            print(f"  {rephrase_type}: {count} entries")
+        
+        # Print enhanced summaries
+        print("\n=== REJECTION ACCURACY SUMMARY ===")
         for model_name in by_model.keys():
             model_results = [r for r in results if r['llm_name'] == model_name]
             rejection_accuracies = [r['validation_scores'].get('rejection_accuracy', 0.0) for r in model_results]
             avg_rejection_accuracy = np.mean(rejection_accuracies)
             print(f"{model_name}: {avg_rejection_accuracy:.3f} avg rejection accuracy")
+        
+        print("\n=== JACCARD SIMILARITY SUMMARY ===")
+        for model_name in by_model.keys():
+            model_results = [r for r in results if r['llm_name'] == model_name]
+            jaccard_scores = [r['validation_scores'].get('jaccard_average', 0.0) for r in model_results]
+            avg_jaccard_score = np.mean(jaccard_scores)
+            print(f"{model_name}: {avg_jaccard_score:.3f} avg Jaccard similarity")
 
     # Save final results
-    output_file = f'final_results_{MAX_TEXTS_TO_PROCESS}_texts.json'
+    output_file = f'enhanced_results_{MAX_TEXTS_TO_PROCESS}_texts.json'
     with open(output_file, 'w', encoding='utf-8') as f: 
         json.dump(results, f, indent=2, ensure_ascii=False)
     print(f"\nResults saved to: {output_file}")
     
-    # Generate plots
+    # Generate plots and confusion matrix
     if results:
         generate_summary_plots(output_file, PLOTS_OUTPUT_DIR)
     else:
@@ -1202,68 +1774,5 @@ def main():
 
     print("\n--- Completed ---")
 
-def create_table4_validation_summary(results_file_path):
-    """
-    Create a Table 4 style summary specifically for validation metrics like in the research paper.
-    This function focuses on the key metrics: Rejection Accuracy, BERTScore, SBERT Similarity, and LLM Judge.
-    """
-    try:
-        with open(results_file_path, 'r', encoding='utf-8') as f:
-            results = json.load(f)
-        
-        # Convert to DataFrame
-        df = pd.DataFrame(results)
-        
-        # Extract validation scores
-        validation_scores = []
-        for result in results:
-            scores = result.get('validation_scores', {})
-            row = {
-                'Model': result['llm_name'],
-                'Strategy': result.get('omission_strategy', 'N/A'),
-                'Rejection_Accuracy': scores.get('rejection_accuracy', 0.0),
-                'BERTScore': scores.get('bert_score_rephrased_vs_original_f1', 0.0),
-                'SBERT_Similarity': scores.get('sbert_similarity_context', 0.0),
-                'LLM_Judge': scores.get('judge_rephrase_quality_score', 0.0)
-            }
-            validation_scores.append(row)
-        
-        validation_df = pd.DataFrame(validation_scores)
-        
-        # Group by model and strategy (if applicable)
-        if 'Strategy' in validation_df.columns and validation_df['Strategy'].nunique() > 1:
-            summary = validation_df.groupby(['Model', 'Strategy']).agg({
-                'Rejection_Accuracy': 'mean',
-                'BERTScore': 'mean', 
-                'SBERT_Similarity': 'mean',
-                'LLM_Judge': 'mean'
-            }).round(3)
-        else:
-            summary = validation_df.groupby('Model').agg({
-                'Rejection_Accuracy': 'mean',
-                'BERTScore': 'mean',
-                'SBERT_Similarity': 'mean', 
-                'LLM_Judge':'mean'
-            }).round(3)
-        
-        print("\n" + "="*80)
-        print("TABLE 4 STYLE VALIDATION RESULTS (CORRECTED REJECTION ACCURACY)")
-        print("="*80)
-        print(summary.to_string())
-        print("="*80)
-        
-        # Save to CSV
-        summary.to_csv('table4_validation_summary.csv')
-        print(f"Summary saved to: table4_validation_summary.csv")
-        
-        return summary
-        
-    except Exception as e:
-        print(f"Error creating Table 4 summary: {e}")
-        return None
-
 if __name__ == '__main__':
     main()
-    
-    # Uncomment to create Table 4 style summary
-    # create_table4_validation_summary('final_results_500_texts.json') 
