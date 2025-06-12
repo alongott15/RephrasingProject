@@ -430,6 +430,23 @@ def _generate_hf_response(model, tokenizer, prompt_text, max_new_tokens, tempera
 
 # ===== DATA LOADING =====
 def load_official_squad_json(file_path):
+    """
+    Load JSON data with the new simplified format:
+    [
+        {
+            "title": "...",
+            "full_context": "...", 
+            "questions_details": [
+                {
+                    "id": "...",
+                    "question": "...",
+                    "answers_text": [...],
+                    "is_impossible": false
+                }
+            ]
+        }
+    ]
+    """
     try:
         with open(file_path, 'r', encoding='utf-8') as f: 
             json_data = json.load(f)
@@ -1287,9 +1304,8 @@ def generate_summary_plots(results_file_path, output_dir):
     # Create enhanced summary tables
     print("Generating enhanced validation summary...")
     table_metrics = {
-        'rejection_accuracy': 'Rejection Accuracy',
+        'rejection_accuracy': 'Rejection Accuracy',  # Proportion of omitted questions that become unanswerable
         'jaccard_token': 'Jaccard Token',
-        'jaccard_average': 'Jaccard Average',
         'bert_score_rephrased_vs_original_f1': 'BERTScore',
         'sbert_similarity_context': 'SBERT Similarity', 
         'judge_rephrase_quality_score': 'LLM Judge'
@@ -1301,7 +1317,7 @@ def generate_summary_plots(results_file_path, output_dir):
         'bert_score_rephrased_vs_original_f1': 'BERTScore F1',
         'sbert_similarity_context': 'SBERT Similarity',
         'llm_avg_answer_sbert_similarity_kept_q': 'LLM Answer Similarity',
-        'rejection_accuracy': 'Rejection Accuracy',
+        'rejection_accuracy': 'Rejection Accuracy',  # This is now the correct metric
         'judge_rephrase_quality_score': 'Judge: Rephrase Quality',
         'judge_kept_q_answer_correctness_score': 'Judge: Answer Correctness',
         'jaccard_token': 'Jaccard Token'
@@ -1518,9 +1534,9 @@ def main():
                         - The rewritten passage should be comprehensive enough to answer all "keep" questions
                         - Information relevant to "omit" questions should be removed, obscured, or replaced with vague references
                         - Maintain the general topic and context of the original passage
-                        - DO NOT explicitly mention that information has been omitted
                         - Ensure smooth transitions and logical flow in the rewritten text
-                        - Do not explicitly mention that information has been omitted"""
+                        - Do not explicitly mention that information has been omitted
+                        - If the answer to the omitted question is a name, replace it with a generic term like \"the person\" or \"the entity\""""
 
     # Flexible user prompt template
     user_prompt_template = """Original Passage:
@@ -1611,7 +1627,7 @@ def main():
                 random.shuffle(questions)
                 num_omit = strategy_config["num_to_omit"]
                 omit_questions = questions[:num_omit]
-                keep_questions = questions[num_omit:]
+                keep_questions = questions[num_omit:num_omit+random.randint(1,2)]
                 
                 if not keep_questions:
                     continue
@@ -1638,7 +1654,7 @@ def main():
                 # Judge evaluation
                 judge_scores = evaluate_with_llm_judge(context, rewritten, keep_questions, omit_q_strings, llm_qa_results, JUDGE_LLM_CONFIG)
                 
-                # Validation scores with corrected rejection accuracy and Jakarta score
+                # Validation scores with corrected rejection accuracy and Jaccard score
                 validation_scores = calculate_comprehensive_validation_scores(context, rewritten, keep_questions, omit_q_strings, llm_qa_results, judge_scores, llm_config)
                 
                 # Store original rephrasing result
