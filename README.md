@@ -1,8 +1,3 @@
-# RephrasingProject
-Of course. Here is a `README.md` file for your project, incorporating an overview, results analysis, and key points from the research paper.
-
-***
-
 # Semantic Coverage Relationship Modeling
 
 [cite_start]This project implements the framework described in the paper "Same, More, or Different? Classifying Semantic Coverage with Generative and Discriminative Models"[cite: 1]. It provides a comprehensive pipeline for generating a synthetic dataset to study Semantic Coverage Relationships (SCR), evaluating various Large Language Models (LLMs) on a controlled rephrasing task, and training classifiers to identify these relationships.
