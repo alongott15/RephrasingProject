@@ -58,7 +58,7 @@ JUDGE_LLM_CONFIG = {
 
 MAX_TEXTS_TO_PROCESS = 500
 SQUAD_JSON_FILE_PATH = './data/train-v2.0.json'  # Original SQuAD format
-CUSTOM_JSON_FILE_PATH = './data/squad_500.json'  # New custom format
+CUSTOM_JSON_FILE_PATH = './data/zelda_data.json'  # New custom format
 PLOTS_OUTPUT_DIR = 'rephrasing_plots_azure_ai_inf'
 
 # Choose which data file to use
@@ -502,7 +502,7 @@ def create_sample_custom_json(output_path='./data/sample_custom_format.json'):
     sample_data = [
         {
             "title": "Sample_Topic_1",
-            "full_context": "This is a sample context paragraph containing information about a topic. It includes various facts and details that can be used to answer questions. The paragraph should be substantial enough to contain information for multiple questions.",
+            "full_context": "This is a sample context paragraph containing information about a topic. It includes various facts and details that can be used to answer questions. The paragraph should be substantial enough to contain information for multiple questions about different aspects of the topic.",
             "questions_details": [
                 {
                     "id": "sample_q1",
@@ -517,7 +517,13 @@ def create_sample_custom_json(output_path='./data/sample_custom_format.json'):
                     "is_impossible": False
                 },
                 {
-                    "id": "sample_q3_impossible",
+                    "id": "sample_q3",
+                    "question": "What aspects does the paragraph cover?",
+                    "answers_text": ["different aspects", "multiple aspects"],
+                    "is_impossible": False
+                },
+                {
+                    "id": "sample_q4_impossible",
                     "question": "What color is the paragraph?",
                     "answers_text": [],
                     "is_impossible": True
@@ -526,18 +532,24 @@ def create_sample_custom_json(output_path='./data/sample_custom_format.json'):
         },
         {
             "title": "Sample_Topic_2", 
-            "full_context": "Another example paragraph with different content. This paragraph discusses a completely different subject matter and provides unique information that would require different questions to extract the key details.",
+            "full_context": "Another example paragraph with different content about technology and innovation. This text discusses modern developments in artificial intelligence and machine learning. The field has seen rapid progress in recent years with breakthrough applications in natural language processing and computer vision.",
             "questions_details": [
                 {
-                    "id": "sample_q4",
+                    "id": "sample_q5",
                     "question": "What does this paragraph discuss?",
-                    "answers_text": ["different subject matter", "completely different subject"],
+                    "answers_text": ["technology and innovation", "artificial intelligence"],
                     "is_impossible": False
                 },
                 {
-                    "id": "sample_q5",
-                    "question": "What type of information does this paragraph provide?",
-                    "answers_text": ["unique information"],
+                    "id": "sample_q6",
+                    "question": "What breakthrough applications are mentioned?",
+                    "answers_text": ["natural language processing and computer vision", "NLP and computer vision"],
+                    "is_impossible": False
+                },
+                {
+                    "id": "sample_q7",
+                    "question": "How has the field progressed?",
+                    "answers_text": ["rapid progress", "seen rapid progress"],
                     "is_impossible": False
                 }
             ]
@@ -549,6 +561,15 @@ def create_sample_custom_json(output_path='./data/sample_custom_format.json'):
         json.dump(sample_data, f, indent=2, ensure_ascii=False)
     
     print(f"Sample custom format JSON created at: {output_path}")
+    print("\nWith enhanced answer removal for 'completing' type, you'll get 2 high-quality datasets per context:")
+    print("1. 'original': Rephrases that keep all questions answerable with varied vocabulary")
+    print("2. 'completing': Rephrases that can ONLY answer omitted questions with proper answer removal:")
+    print("   • Direct answers are removed or replaced with vague terms")
+    print("   • Specific facts → 'certain', 'some', 'various'")
+    print("   • Dates → 'recently', 'previously', 'at some point'")
+    print("   • Locations → 'somewhere', 'in a region'")
+    print("   • Names → 'someone', 'a person', 'an individual'")
+    print("\nThis creates comprehensive training data with proper answer obscuring!")
     return sample_data
 
 def load_original_squad_format(squad_data):
@@ -1261,7 +1282,7 @@ def generate_summary_plots(results_file_path, output_dir):
     # Questions Removed Performance Analysis
     if has_strategies:
         print("Generating questions removed performance plots...")
-        for metric, label in requested_metrics.items():
+        for metric, label in metrics_labels.items():
             if metric not in df.columns:
                 continue
             
@@ -1304,20 +1325,24 @@ def generate_summary_plots(results_file_path, output_dir):
     # Create enhanced summary tables
     print("Generating enhanced validation summary...")
     table_metrics = {
-        'rejection_accuracy': 'Rejection Accuracy',  # Proportion of omitted questions that become unanswerable
+        'rejection_accuracy': 'Rejection Accuracy',  # Different meaning based on rephrase_type
+        'omitted_preserving_score': 'Omitted Preserving Score',  # For completing type
+        'answer_removal_quality': 'Answer Removal Quality',  # For completing type
         'jaccard_token': 'Jaccard Token',
         'bert_score_rephrased_vs_original_f1': 'BERTScore',
         'sbert_similarity_context': 'SBERT Similarity', 
         'judge_rephrase_quality_score': 'LLM Judge'
     }
     
-    # Create the specific requested table with key metrics including Jaccard Token
+    # Create the specific requested table with key metrics including new completing metrics
     print("Generating requested metrics table...")
-    requested_metrics = {
+    metrics_labels = {
         'bert_score_rephrased_vs_original_f1': 'BERTScore F1',
         'sbert_similarity_context': 'SBERT Similarity',
         'llm_avg_answer_sbert_similarity_kept_q': 'LLM Answer Similarity',
         'rejection_accuracy': 'Rejection Accuracy',  # This is now the correct metric
+        'omitted_preserving_score': 'Omitted Preserving Score',  # For completing type
+        'answer_removal_quality': 'Answer Removal Quality',  # For completing type
         'judge_rephrase_quality_score': 'Judge: Rephrase Quality',
         'judge_kept_q_answer_correctness_score': 'Judge: Answer Correctness',
         'jaccard_token': 'Jaccard Token'
@@ -1348,7 +1373,7 @@ def generate_summary_plots(results_file_path, output_dir):
                                     'Rephrase_Type': rephrase_type,
                                     'Count': len(rephrase_data)
                                 }
-                                for metric, label in requested_metrics.items():
+                                for metric, label in metrics_labels.items():
                                     if metric in rephrase_data.columns:
                                         row[label] = f"{rephrase_data[metric].mean():.3f}"
                                     else:
@@ -1360,7 +1385,7 @@ def generate_summary_plots(results_file_path, output_dir):
                             'Questions_Removed': questions_removed,
                             'Count': len(strategy_data)
                         }
-                        for metric, label in requested_metrics.items():
+                        for metric, label in metrics_labels.items():
                             if metric in strategy_data.columns:
                                 row[label] = f"{strategy_data[metric].mean():.3f}"
                             else:
@@ -1369,7 +1394,7 @@ def generate_summary_plots(results_file_path, output_dir):
         else:
             # No strategies, just by model
             row = {'Model': llm_name, 'Count': len(llm_data)}
-            for metric, label in requested_metrics.items():
+            for metric, label in metrics_labels.items():
                 if metric in llm_data.columns:
                     row[label] = f"{llm_data[metric].mean():.3f}"
                 else:
@@ -1397,7 +1422,7 @@ def generate_summary_plots(results_file_path, output_dir):
                 'Total_Entries': len(strategy_data)
             }
             
-            for metric, label in requested_metrics.items():
+            for metric, label in metrics_labels.items():
                 if metric in strategy_data.columns:
                     summary_row[label] = f"{strategy_data[metric].mean():.3f} ± {strategy_data[metric].std():.3f}"
                 else:
@@ -1461,7 +1486,7 @@ def generate_summary_plots(results_file_path, output_dir):
         llm_data = df[df['llm_name'] == llm_name]
         row = {'Model': llm_name, 'Total_Entries': len(llm_data)}
         
-        for metric, label in requested_metrics.items():
+        for metric, label in metrics_labels.items():
             if metric in llm_data.columns:
                 mean_score = llm_data[metric].mean()
                 std_score = llm_data[metric].std()
@@ -1474,8 +1499,8 @@ def generate_summary_plots(results_file_path, output_dir):
     if model_comparison_data:
         model_comparison_df = pd.DataFrame(model_comparison_data)
         print(model_comparison_df.to_string(index=False))
-        model_comparison_df.to_csv(os.path.join(output_dir, 'model_comparison_requested_metrics.csv'), index=False)
-        print(f"\nModel comparison saved to: model_comparison_requested_metrics.csv")
+        model_comparison_df.to_csv(os.path.join(output_dir, 'model_comparison_metrics_labels.csv'), index=False)
+        print(f"\nModel comparison saved to: model_comparison_metrics_labels.csv")
 
     print(f"\nPlots and confusion matrix saved to: {output_dir}")
 
@@ -1535,8 +1560,7 @@ def main():
                         - Information relevant to "omit" questions should be removed, obscured, or replaced with vague references
                         - Maintain the general topic and context of the original passage
                         - Ensure smooth transitions and logical flow in the rewritten text
-                        - Do not explicitly mention that information has been omitted
-                        - If the answer to the omitted question is a name, replace it with a generic term like \"the person\" or \"the entity\""""
+                        - Do not explicitly mention that information has been omitted"""
 
     # Flexible user prompt template
     user_prompt_template = """Original Passage:
@@ -1654,7 +1678,7 @@ def main():
                 # Judge evaluation
                 judge_scores = evaluate_with_llm_judge(context, rewritten, keep_questions, omit_q_strings, llm_qa_results, JUDGE_LLM_CONFIG)
                 
-                # Validation scores with corrected rejection accuracy and Jaccard score
+                # Validation scores with corrected rejection accuracy and Jakarta score
                 validation_scores = calculate_comprehensive_validation_scores(context, rewritten, keep_questions, omit_q_strings, llm_qa_results, judge_scores, llm_config)
                 
                 # Store original rephrasing result
@@ -1791,4 +1815,5 @@ def main():
     print("\n--- Completed ---")
 
 if __name__ == '__main__':
-    main()
+    # main()
+    generate_summary_plots(f'enhanced_results_{MAX_TEXTS_TO_PROCESS}_texts.json', PLOTS_OUTPUT_DIR)
