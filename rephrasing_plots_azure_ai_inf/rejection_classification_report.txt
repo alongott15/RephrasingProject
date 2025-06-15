@@ -1,0 +1,14 @@
+REJECTION CLASSIFICATION REPORT
+================================
+
+True labels: 1 = should be answerable (kept), 0 = should be unanswerable (omitted)
+Predicted labels: 1 = model can answer, 0 = model cannot answer
+
+                                  precision    recall  f1-score   support
+
+Should be Unanswerable (Omitted)       0.93      0.53      0.67      8756
+     Should be Answerable (Kept)       0.67      0.96      0.79      8756
+
+                        accuracy                           0.74     17512
+                       macro avg       0.80      0.74      0.73     17512
+                    weighted avg       0.80      0.74      0.73     17512

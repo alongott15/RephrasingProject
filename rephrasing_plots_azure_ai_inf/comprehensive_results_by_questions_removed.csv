@@ -1,0 +1,13 @@
+Model,Questions_Removed,Rephrase_Type,Count,BERTScore F1,SBERT Similarity,LLM Answer Similarity,Rejection Accuracy,Judge: Rephrase Quality,Judge: Answer Correctness,Jaccard Token
+Llama-3.2-3B-Instruct,1,original,500,0.890,0.714,0.749,0.876,4.392,4.089,0.338
+Llama-3.2-3B-Instruct,1,reverse,500,0.889,0.709,0.729,0.826,4.244,4.104,0.330
+Llama-3.2-3B-Instruct,2,original,500,0.884,0.703,0.738,0.733,4.132,4.134,0.317
+Llama-3.2-3B-Instruct,2,reverse,500,0.886,0.718,0.786,0.824,4.306,4.097,0.327
+GPT-4.1,1,original,500,0.927,0.872,0.774,0.726,4.364,4.730,0.390
+GPT-4.1,1,reverse,500,0.919,0.838,0.747,0.790,4.186,4.618,0.352
+GPT-4.1,2,original,500,0.913,0.824,0.758,0.741,4.172,4.648,0.316
+GPT-4.1,2,reverse,500,0.925,0.868,0.773,0.711,4.420,4.697,0.372
+DeepSeek-R1,1,original,500,0.904,0.821,0.472,0.040,4.410,4.399,0.272
+DeepSeek-R1,1,reverse,500,0.898,0.802,0.484,0.059,4.126,4.374,0.258
+DeepSeek-R1,2,original,500,0.893,0.794,0.466,0.049,4.132,4.283,0.227
+DeepSeek-R1,2,reverse,500,0.899,0.811,0.469,0.044,4.338,4.385,0.254

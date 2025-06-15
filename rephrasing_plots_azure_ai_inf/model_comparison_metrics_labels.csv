@@ -1,0 +1,4 @@
+Model,Total_Entries,BERTScore F1,SBERT Similarity,LLM Answer Similarity,Rejection Accuracy,Judge: Rephrase Quality,Judge: Answer Correctness,Jaccard Token
+Llama-3.2-3B-Instruct,2000,0.887 ± 0.022,0.711 ± 0.108,0.750 ± 0.299,0.815 ± 0.3314.269 ± 0.708,4.106 ± 1.343,0.328 ± 0.115
+GPT-4.1,2000,0.921 ± 0.028,0.851 ± 0.100,0.763 ± 0.264,0.742 ± 0.390,4.285 ± 0.723,4.673 ± 0.916,0.357 ± 0.149
+DeepSeek-R1,2000,0.899 ± 0.038,0.807 ± 0.140,0.473 ± 0.149,0.048 ± 0.191,4.252 ± 0.829,4.360 ± 0.984,0.253 ± 0.116
