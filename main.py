@@ -25,12 +25,12 @@ AZURE_AI_API_KEY = os.getenv('AZURE_AI_API_KEY')
 AZURE_AI_ENDPOINT = os.getenv('AZURE_AI_ENDPOINT')
 
 LLM_CONFIGURATIONS = [
-    {
-        "name": "Llama-3.2-3B-Instruct", 
-        "type": "hf_local",
-        "model_id": "meta-llama/Llama-3.2-3B-Instruct", 
-        "requires_hf_login": True
-    },
+    # {
+    #     "name": "Llama-3.2-3B-Instruct", 
+    #     "type": "hf_local",
+    #     "model_id": "meta-llama/Llama-3.2-3B-Instruct", 
+    #     "requires_hf_login": True
+    # },
     {
         "name": "GPT-4.1",
         "type": "azure_ai_inference",
@@ -58,7 +58,7 @@ JUDGE_LLM_CONFIG = {
 
 MAX_TEXTS_TO_PROCESS = 500
 SQUAD_JSON_FILE_PATH = './data/train-v2.0.json'  # Original SQuAD format
-CUSTOM_JSON_FILE_PATH = './data/zelda_data.json'  # New custom format
+CUSTOM_JSON_FILE_PATH = './data/squad_500.json'  # New custom format
 PLOTS_OUTPUT_DIR = 'rephrasing_plots_azure_ai_inf'
 
 # Choose which data file to use
@@ -495,121 +495,7 @@ def load_official_squad_json(file_path):
         print(f"Error loading JSON data: {e}")
         return None
 
-def create_sample_custom_json(output_path='./data/sample_custom_format.json'):
-    """
-    Create a sample JSON file in the new custom format to help users understand the structure.
-    """
-    sample_data = [
-        {
-            "title": "Sample_Topic_1",
-            "full_context": "This is a sample context paragraph containing information about a topic. It includes various facts and details that can be used to answer questions. The paragraph should be substantial enough to contain information for multiple questions about different aspects of the topic.",
-            "questions_details": [
-                {
-                    "id": "sample_q1",
-                    "question": "What is the main topic of this paragraph?",
-                    "answers_text": ["sample topic", "topic"],
-                    "is_impossible": False
-                },
-                {
-                    "id": "sample_q2", 
-                    "question": "What type of information does the paragraph contain?",
-                    "answers_text": ["facts and details", "various facts"],
-                    "is_impossible": False
-                },
-                {
-                    "id": "sample_q3",
-                    "question": "What aspects does the paragraph cover?",
-                    "answers_text": ["different aspects", "multiple aspects"],
-                    "is_impossible": False
-                },
-                {
-                    "id": "sample_q4_impossible",
-                    "question": "What color is the paragraph?",
-                    "answers_text": [],
-                    "is_impossible": True
-                }
-            ]
-        },
-        {
-            "title": "Sample_Topic_2", 
-            "full_context": "Another example paragraph with different content about technology and innovation. This text discusses modern developments in artificial intelligence and machine learning. The field has seen rapid progress in recent years with breakthrough applications in natural language processing and computer vision.",
-            "questions_details": [
-                {
-                    "id": "sample_q5",
-                    "question": "What does this paragraph discuss?",
-                    "answers_text": ["technology and innovation", "artificial intelligence"],
-                    "is_impossible": False
-                },
-                {
-                    "id": "sample_q6",
-                    "question": "What breakthrough applications are mentioned?",
-                    "answers_text": ["natural language processing and computer vision", "NLP and computer vision"],
-                    "is_impossible": False
-                },
-                {
-                    "id": "sample_q7",
-                    "question": "How has the field progressed?",
-                    "answers_text": ["rapid progress", "seen rapid progress"],
-                    "is_impossible": False
-                }
-            ]
-        }
-    ]
-    
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(sample_data, f, indent=2, ensure_ascii=False)
-    
-    print(f"Sample custom format JSON created at: {output_path}")
-    print("\nWith enhanced answer removal for 'completing' type, you'll get 2 high-quality datasets per context:")
-    print("1. 'original': Rephrases that keep all questions answerable with varied vocabulary")
-    print("2. 'completing': Rephrases that can ONLY answer omitted questions with proper answer removal:")
-    print("   • Direct answers are removed or replaced with vague terms")
-    print("   • Specific facts → 'certain', 'some', 'various'")
-    print("   • Dates → 'recently', 'previously', 'at some point'")
-    print("   • Locations → 'somewhere', 'in a region'")
-    print("   • Names → 'someone', 'a person', 'an individual'")
-    print("\nThis creates comprehensive training data with proper answer obscuring!")
-    return sample_data
-
 def load_original_squad_format(squad_data):
-    """
-    Fallback function to handle original SQuAD format for backward compatibility.
-    """
-    try:
-        processed_data = []
-        
-        for topic_data in squad_data.get('data', []):
-            title = topic_data.get('title', 'Unknown_Title')
-            
-            for para_idx, paragraph in enumerate(topic_data.get('paragraphs', [])):
-                context = paragraph.get('context')
-                qas_list = paragraph.get('qas', [])
-                
-                answerable_questions = [
-                    {
-                        'question': qa['question'], 
-                        'original_answers': [ans['text'] for ans in qa.get('answers', [])], 
-                        'id': qa.get('id', f"{title}_p{para_idx}_q{i}")
-                    }
-                    for i, qa in enumerate(qas_list) 
-                    if not qa.get('is_impossible', False) and qa.get('question') and qa.get('answers')
-                ]
-                
-                if context and answerable_questions:
-                    processed_data.append({
-                        "entry_id": f"{title}_p{para_idx}", 
-                        "title": title, 
-                        "context": context, 
-                        "answerable_question_objects": answerable_questions
-                    })
-        
-        print(f"Loaded {len(processed_data)} entries from original SQuAD format")
-        return processed_data
-        
-    except Exception as e: 
-        print(f"Error loading original SQuAD data: {e}")
-        return None
     """
     Fallback function to handle original SQuAD format for backward compatibility.
     """
@@ -653,13 +539,13 @@ def generate_rewrite_hf_local(original_passage, questions_to_keep, questions_to_
     if not current_hf_model or not current_hf_tokenizer: 
         return "Error: Local HF model not loaded."
     
-    formatted_qs_keep = "".join(f"- {q}\n" for q in questions_to_keep) if questions_to_keep else "N/A\n"
-    formatted_qs_omit = "".join(f"- {q}\n" for q in questions_to_omit) if questions_to_omit else "N/A\n"
+    formatted_qs_keep = "\n".join([f"- {q}" for q in questions_to_keep])
+    formatted_qs_omit = "\n".join([f"- {q}" for q in questions_to_omit])
     
     user_msg = user_prompt_template.format(
-        original_passage=original_passage, 
-        formatted_questions_to_keep=formatted_qs_keep, 
-        formatted_questions_to_omit=formatted_qs_omit
+        context=original_passage, 
+        questions_to_omit_text=formatted_qs_keep, 
+        questions_to_make_unanswerable_text=formatted_qs_omit
     )
     
     messages = [
@@ -674,7 +560,7 @@ def generate_rewrite_hf_local(original_passage, questions_to_keep, questions_to_
 
     try:
         max_new_tokens = min(int(len(current_hf_tokenizer.encode(original_passage)) * 1.3) + 100, 1024)
-        rewritten = _generate_hf_response(current_hf_model, current_hf_tokenizer, prompt_text, max_new_tokens)
+        rewritten = _generate_hf_response(current_hf_model, current_hf_tokenizer, prompt_text, max_new_tokens, temperature=0.05)
         
         if rewritten and rewritten.lower() != original_passage.lower():
             return rewritten
@@ -693,8 +579,8 @@ def generate_rewrite_azure_ai_inference(original_passage, questions_to_keep, que
     if not model_name: 
         return f"Error: Model name missing for {llm_config['name']}"
 
-    formatted_qs_keep = "".join(f"- {q}\n" for q in questions_to_keep) if questions_to_keep else "N/A\n"
-    formatted_qs_omit = "".join(f"- {q}\n" for q in questions_to_omit) if questions_to_omit else "N/A\n"
+    formatted_qs_keep = "\n".join([f"- {q}" for q in questions_to_keep])
+    formatted_qs_omit = "\n".join([f"- {q}" for q in questions_to_omit])
     
     # Enhanced system prompt for DeepSeek
     enhanced_system_prompt = system_prompt
@@ -706,9 +592,9 @@ def generate_rewrite_azure_ai_inference(original_passage, questions_to_keep, que
         )
     
     user_msg = user_prompt_template.format(
-        original_passage=original_passage, 
-        formatted_questions_to_keep=formatted_qs_keep, 
-        formatted_questions_to_omit=formatted_qs_omit
+        context=original_passage, 
+        questions_to_omit_text=formatted_qs_keep, 
+        questions_to_make_unanswerable_text=formatted_qs_omit
     )
     
     messages = [
@@ -721,7 +607,7 @@ def generate_rewrite_azure_ai_inference(original_passage, questions_to_keep, que
             messages=messages,
             model=model_name,
             max_tokens=1536,
-            temperature=0.2
+            temperature=0.05
         )
         
         if hasattr(response, 'choices') and response.choices:
@@ -749,13 +635,56 @@ def get_llm_answers_from_rephrased_text(rephrased_text, questions_to_ask, llm_co
             'answerability': [False] * len(questions_to_ask)
         }
     
-    qa_system_prompt = (
-        "Based ONLY on the provided Context, answer the Question. "
-        "If the Context does not contain the information needed to answer the question, "
-        "respond with 'UNANSWERABLE' and nothing else. "
-        "Only provide answers that can be directly supported by the given context."
-    )
-    
+    qa_system_prompt = """
+                        You are an expert context-based question answering assistant. Your task is to provide precise answers based solely on the information explicitly stated in the provided context.
+                        🔍 ANALYSIS PROTOCOL:
+                        Follow this 4-step process for every question:
+
+                        SCAN: Locate relevant information in the context
+                        VERIFY: Confirm information directly answers the question
+                        VALIDATE: Ensure no inference or external knowledge needed
+                        RESPOND: Provide exact answer or "UNANSWERABLE"
+
+                        📋 RESPONSE CRITERIA:
+                        FOR ANSWERABLE QUESTIONS:
+                        ✅ Information is explicitly stated in context
+                        ✅ Context provides specific, complete details needed
+                        ✅ Answer can be directly extracted without interpretation
+                        ✅ All parts of the question can be answered from context
+                        FORMAT: Provide direct, specific answer using context details
+                        FOR UNANSWERABLE QUESTIONS:
+                        ❌ Key information missing from context
+                        ❌ Context mentions topic but lacks specifics required
+                        ❌ Answer requires inference, deduction, or external knowledge
+                        ❌ Context provides partial but insufficient information
+                        FORMAT: Respond exactly with "UNANSWERABLE"
+                        🚨 VALIDATION CHECKLIST:
+                        Before responding, verify:
+
+                        Did I find explicit information in the context?
+                        Can I answer completely without adding external knowledge?
+                        Am I using specific details from the context?
+                        Would someone else reach the same answer from this context?
+
+                        ⚠️ COMMON ERRORS TO AVOID:
+
+                        Partial answers when complete information is missing
+                        Inferring information not explicitly stated
+                        Using external knowledge about the topic
+                        Providing vague answers when context has specific details
+                        DO NOT INCLUDE ANY REASONING, EXPLANATIONS, OR THINKING PROCESS IN YOUR RESPONSE.
+                    """
+
+    qa_prompt = """
+                CONTEXT:
+                {context}
+                QUESTION:
+                {question}
+                Please analyze the provided context and answer the question following your established protocol. Provide either a direct answer based on explicit information in the context, or respond with "UNANSWERABLE" if the required information is not explicitly available.
+
+                DO NOT INCLUDE ANY REASONING, EXPLANATIONS, OR THINKING PROCESS IN YOUR RESPONSE.
+                """
+
     llm_answers = []
     answerability_predictions = []
     
@@ -770,10 +699,9 @@ def get_llm_answers_from_rephrased_text(rephrased_text, questions_to_ask, llm_co
                 }
                 
             for question in questions_to_ask:
-                qa_prompt = f"Context: \"{rephrased_text}\"\n\nQuestion: \"{question}\"\n\nAnswer:"
-                messages = [{"role": "system", "content": qa_system_prompt}, {"role": "user", "content": qa_prompt}]
+                messages = [{"role": "system", "content": qa_system_prompt}, {"role": "user", "content": qa_prompt.format(context=rephrased_text, question=question)}]
                 prompt_text = current_hf_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                answer = _generate_hf_response(current_hf_model, current_hf_tokenizer, prompt_text, max_new_tokens=100, temperature=0.2)
+                answer = _generate_hf_response(current_hf_model, current_hf_tokenizer, prompt_text, max_new_tokens=100, temperature=0.05)
                 
                 # Check if model indicated unanswerable
                 is_answerable = not (
@@ -814,7 +742,7 @@ def get_llm_answers_from_rephrased_text(rephrased_text, questions_to_ask, llm_co
                     messages=messages, 
                     model=model_name, 
                     max_tokens=100, 
-                    temperature=0.2
+                    temperature=0.05
                 )
                 
                 if hasattr(response, 'choices') and response.choices:
@@ -1282,7 +1210,7 @@ def generate_summary_plots(results_file_path, output_dir):
     # Questions Removed Performance Analysis
     if has_strategies:
         print("Generating questions removed performance plots...")
-        for metric, label in metrics_labels.items():
+        for metric, label in requested_metrics.items():
             if metric not in df.columns:
                 continue
             
@@ -1336,7 +1264,7 @@ def generate_summary_plots(results_file_path, output_dir):
     
     # Create the specific requested table with key metrics including new completing metrics
     print("Generating requested metrics table...")
-    metrics_labels = {
+    requested_metrics = {
         'bert_score_rephrased_vs_original_f1': 'BERTScore F1',
         'sbert_similarity_context': 'SBERT Similarity',
         'llm_avg_answer_sbert_similarity_kept_q': 'LLM Answer Similarity',
@@ -1373,7 +1301,7 @@ def generate_summary_plots(results_file_path, output_dir):
                                     'Rephrase_Type': rephrase_type,
                                     'Count': len(rephrase_data)
                                 }
-                                for metric, label in metrics_labels.items():
+                                for metric, label in requested_metrics.items():
                                     if metric in rephrase_data.columns:
                                         row[label] = f"{rephrase_data[metric].mean():.3f}"
                                     else:
@@ -1385,7 +1313,7 @@ def generate_summary_plots(results_file_path, output_dir):
                             'Questions_Removed': questions_removed,
                             'Count': len(strategy_data)
                         }
-                        for metric, label in metrics_labels.items():
+                        for metric, label in requested_metrics.items():
                             if metric in strategy_data.columns:
                                 row[label] = f"{strategy_data[metric].mean():.3f}"
                             else:
@@ -1394,7 +1322,7 @@ def generate_summary_plots(results_file_path, output_dir):
         else:
             # No strategies, just by model
             row = {'Model': llm_name, 'Count': len(llm_data)}
-            for metric, label in metrics_labels.items():
+            for metric, label in requested_metrics.items():
                 if metric in llm_data.columns:
                     row[label] = f"{llm_data[metric].mean():.3f}"
                 else:
@@ -1422,7 +1350,7 @@ def generate_summary_plots(results_file_path, output_dir):
                 'Total_Entries': len(strategy_data)
             }
             
-            for metric, label in metrics_labels.items():
+            for metric, label in requested_metrics.items():
                 if metric in strategy_data.columns:
                     summary_row[label] = f"{strategy_data[metric].mean():.3f} ± {strategy_data[metric].std():.3f}"
                 else:
@@ -1486,7 +1414,7 @@ def generate_summary_plots(results_file_path, output_dir):
         llm_data = df[df['llm_name'] == llm_name]
         row = {'Model': llm_name, 'Total_Entries': len(llm_data)}
         
-        for metric, label in metrics_labels.items():
+        for metric, label in requested_metrics.items():
             if metric in llm_data.columns:
                 mean_score = llm_data[metric].mean()
                 std_score = llm_data[metric].std()
@@ -1499,8 +1427,8 @@ def generate_summary_plots(results_file_path, output_dir):
     if model_comparison_data:
         model_comparison_df = pd.DataFrame(model_comparison_data)
         print(model_comparison_df.to_string(index=False))
-        model_comparison_df.to_csv(os.path.join(output_dir, 'model_comparison_metrics_labels.csv'), index=False)
-        print(f"\nModel comparison saved to: model_comparison_metrics_labels.csv")
+        model_comparison_df.to_csv(os.path.join(output_dir, 'model_comparison_requested_metrics.csv'), index=False)
+        print(f"\nModel comparison saved to: model_comparison_requested_metrics.csv")
 
     print(f"\nPlots and confusion matrix saved to: {output_dir}")
 
@@ -1515,13 +1443,6 @@ def main():
     download_nltk_punkt_once()
     load_qa_pipeline(device)
     load_sbert_model()
-    
-    # Create sample custom format file for reference
-    if USE_CUSTOM_FORMAT and not os.path.exists(DATA_FILE_PATH):
-        print(f"Custom format file not found. Creating sample file...")
-        create_sample_custom_json('./data/sample_custom_format.json')
-        print(f"Please replace the sample data with your actual data in: {DATA_FILE_PATH}")
-        return
 
     # Test Azure connections
     print("\n=== Testing Azure AI Connections ===")
@@ -1549,27 +1470,241 @@ def main():
                 print(f"  ❌ Client creation failed")
     print("=== Connection Tests Complete ===\n")
 
-    system_prompt = """You are an expert text editor specializing in selective information preservation and omission.
-                       Your task is to rewrite a given passage with the following objectives:
-                       1. PRESERVE: Maintain all information necessary to answer the "questions to keep"
-                       2. OMIT: Remove or obscure information that would help answer the "questions to omit" 
-                       3. COHERENCE: Ensure the rewritten passage remains coherent, natural, and readable
-                       4. ACCURACY: Keep factual information intact for the preserved questions
-                       Guidelines:
-                        - The rewritten passage should be comprehensive enough to answer all "keep" questions
-                        - Information relevant to "omit" questions should be removed, obscured, or replaced with vague references
-                        - Maintain the general topic and context of the original passage
-                        - Ensure smooth transitions and logical flow in the rewritten text
-                        - Do not explicitly mention that information has been omitted"""
+    system_prompt = """
+                    You are a precision information control specialist with expertise in surgical text modification. Your mission is to eliminate specific information while preserving text quality and other information.
+
+CORE OPERATIONAL FRAMEWORK:
+
+PHASE 1 - INFORMATION MAPPING & CLASSIFICATION:
+1. **Content Type Detection**: Identify if content is technical, business, news, academic, or general
+2. **Information Inventory**: Catalog every specific data point:
+   - Personal identifiers (names, titles, roles)
+   - Numerical data (amounts, quantities, percentages, measurements)
+   - Temporal data (dates, times, durations, sequences)
+   - Spatial data (locations, addresses, geographical references)
+   - Organizational data (company names, departments, divisions)
+   - Technical specifications (model numbers, versions, features)
+   - Relational data (connections between entities)
+   - Contextual details (circumstances, conditions, methods)
+
+3. **Question-Information Mapping**: For each data point, determine:
+   - Which elimination-target questions it directly answers
+   - Which preservation questions it directly answers  
+   - Which questions it indirectly supports through combination with other data
+   - Its semantic importance to overall meaning
+
+PHASE 2 - RELATIONSHIP ANALYSIS:
+1. **Combination Risks**: Identify data points that become sensitive when combined
+2. **Inference Chains**: Map how remaining information might enable answering eliminated questions
+3. **Semantic Dependencies**: Understand which information is crucial for preserving meaning
+
+PHASE 3 - SURGICAL ELIMINATION PROTOCOL:
+
+**CONTENT-SPECIFIC TRANSFORMATION RULES:**
+
+FOR TECHNICAL CONTENT:
+- Model numbers → "a specific model", "certain specifications"
+- Version numbers → "a particular version", "certain release"
+- Technical specifications → "specific features", "certain capabilities"
+- Performance metrics → "certain performance levels", "specific measurements"
+
+FOR BUSINESS CONTENT:
+- Executive names → "a senior executive", "company leadership", "management"
+- Financial figures → "significant amounts", "substantial revenue", "considerable investment"
+- Company names → "a major corporation", "the organization", "a leading company"
+- Market data → "market performance", "industry figures", "sector metrics"
+
+FOR NEWS CONTENT:
+- Specific dates → "recently", "in recent months", "during this period"
+- Exact locations → "in the region", "at the location", "in the area"
+- Named individuals → "officials", "representatives", "sources"
+- Precise quotes → "statements indicated", "reports suggested", "sources mentioned"
+
+FOR ACADEMIC CONTENT:
+- Author names → "researchers", "the study authors", "investigators"
+- Publication details → "a recent study", "research findings", "academic work"
+- Specific methodologies → "research methods", "analytical approaches"
+- Exact sample sizes → "a substantial sample", "numerous participants"
+
+**UNIVERSAL TRANSFORMATION HIERARCHY:**
+1. **Complete Elimination**: Remove if serves only eliminated questions
+2. **Generic Replacement**: Replace specific with general if serves both question types
+3. **Contextual Preservation**: Keep if serves only preservation questions and doesn't enable inference
+4. **Semantic Anchoring**: Maintain core meaning while removing specifics
+
+**ADVANCED REPLACEMENT PATTERNS:**
+
+Names & Titles:
+- "John Smith, CEO" → "a company executive", "corporate leadership"
+- "Dr. Sarah Johnson" → "a researcher", "the lead investigator"
+- "Microsoft's Brad Thompson" → "a company representative", "an organizational spokesperson"
+
+Numbers & Measurements:
+- "$50 million" → "a substantial sum", "significant investment"
+- "25%" → "a notable percentage", "a significant portion"
+- "500 employees" → "hundreds of staff", "a substantial workforce"
+- "Q3 2023" → "a recent quarter", "during this period"
+
+Locations & Organizations:
+- "Seattle headquarters" → "company headquarters", "the main office"
+- "Stanford University" → "a leading university", "the academic institution"
+- "European markets" → "international markets", "overseas regions"
+
+Technical Details:
+- "iPhone 15 Pro Max" → "the premium model", "the flagship device"
+- "ChatGPT-4" → "the AI system", "the latest version"
+- "128GB storage" → "substantial storage", "ample memory capacity"
+
+PHASE 4 - QUALITY ASSURANCE PROTOCOL:
+
+**ELIMINATION VERIFICATION CHECKLIST:**
+For each target question, verify:
+- [ ] No specific data remains that directly answers the question
+- [ ] No combination of remaining data enables answering the question
+- [ ] No indirect inference pathways exist to answer the question
+- [ ] Generic replacements prevent specific answers
+- [ ] Related questions of the same type are also blocked
+
+**PRESERVATION VERIFICATION CHECKLIST:**
+For each preservation question, verify:
+- [ ] Necessary information still exists in some form
+- [ ] Information is sufficient for answering (not just partial)
+- [ ] Preservation doesn't compromise elimination goals
+- [ ] Alternative information sources within text support the answer
+
+**READABILITY & SEMANTIC INTEGRITY:**
+- [ ] Text flows naturally with generic replacements
+- [ ] Core meaning and context are preserved
+- [ ] Sentence structure remains coherent
+- [ ] Paragraph transitions make sense
+- [ ] Overall narrative logic is maintained
+
+**EDGE CASE HANDLING:**
+
+COMPLEX SCENARIOS:
+- **Dual-purpose information**: Always eliminate (prioritize elimination over preservation)
+- **Uncertainty about relevance**: Default to elimination (better safe than sorry)
+- **Inferential combinations**: Eliminate all contributing data points
+- **Semantic core information**: Find alternative ways to preserve meaning
+- **Context-dependent sensitivity**: Consider broader implications
+
+FAILURE RECOVERY:
+- If text becomes unreadable: Adjust generic replacements to be more specific (but still generic)
+- If meaning is lost: Find alternative information within text to convey core concepts
+- If preservation questions become unanswerable: Accept this trade-off if elimination integrity requires it
+
+PHASE 5 - FINAL VALIDATION:
+
+**THE BLIND READ TEST:**
+Read the transformed text as if you've never seen the original. For each target question:
+1. Can you provide a specific answer? → FAILURE
+2. Can you make educated guesses with confidence? → LIKELY FAILURE  
+3. Are you completely unable to answer specifically? → SUCCESS
+
+**OUTPUT STANDARDS:**
+- Provide ONLY the transformed text
+- Maintain professional, natural language
+- Ensure grammatical correctness
+- Preserve original text length approximately
+- Keep formatting and structure intact
+"""
 
     # Flexible user prompt template
-    user_prompt_template = """Original Passage:
-                              "{original_passage}"
-                              Questions to KEEP (preserve information for these):
-                              {formatted_questions_to_keep}
-                              Questions to OMIT (remove/obscure information for these):
-                              {formatted_questions_to_omit}
-                              Please provide the rewritten passage:"""
+    user_prompt_template = """
+PRECISION INFORMATION CONTROL MISSION
+
+ORIGINAL TEXT TO TRANSFORM:
+{context}
+
+TARGET QUESTIONS (ELIMINATE ALL INFORMATION - HIGHEST PRIORITY):
+{questions_to_make_unanswerable_text}
+
+PRESERVE QUESTIONS (MAINTAIN ANSWERABILITY - SECONDARY PRIORITY):
+{questions_to_omit_text}
+
+ADVANCED TRANSFORMATION PROTOCOL:
+
+STEP 1 - DEEP CONTENT ANALYSIS:
+Identify the content type and catalog ALL specific information:
+- Names, titles, roles, organizations
+- Numbers, dates, times, measurements  
+- Locations, addresses, geographical references
+- Technical specifications, model numbers, versions
+- Financial data, performance metrics, statistics
+- Relationships, connections, dependencies
+
+STEP 2 - QUESTION-INFORMATION MAPPING:
+For every piece of specific information, determine:
+- Does it directly answer any TARGET questions? → ELIMINATE
+- Does it indirectly help answer TARGET questions? → ELIMINATE  
+- Could it combine with other info to answer TARGET questions? → ELIMINATE
+- Does it exclusively serve PRESERVE questions? → CONSIDER KEEPING
+- Is it semantically crucial for overall meaning? → FIND ALTERNATIVE
+
+STEP 3 - SURGICAL TRANSFORMATION:
+Apply context-appropriate replacements:
+
+PERSONAL/ORGANIZATIONAL:
+- Specific names → "the individual", "the person", "someone"
+- Company names → "the organization", "the company", "a corporation"
+- Titles/roles → "an executive", "a representative", "leadership"
+- Departments → "a division", "the department", "organizational units"
+
+QUANTITATIVE DATA:
+- Exact numbers → "significant amounts", "substantial figures", "considerable quantities"
+- Percentages → "a large portion", "notable percentages", "significant shares"
+- Dates → "recently", "in the past period", "during this timeframe"
+- Measurements → "substantial size", "considerable dimensions", "specific measurements"
+
+TECHNICAL SPECIFICATIONS:
+- Model numbers → "particular models", "specific versions", "certain specifications"
+- Features → "advanced capabilities", "specific features", "particular functions"
+- Performance data → "performance metrics", "operational parameters", "technical specifications"
+
+GEOGRAPHICAL/TEMPORAL:
+- Specific locations → "the location", "the region", "the area"
+- Exact addresses → "the premises", "the facility", "the site"
+- Precise timeframes → "the period", "this timeframe", "recently"
+
+STEP 4 - RELATIONSHIP & INFERENCE PROTECTION:
+- Remove combinations that could enable TARGET question answers
+- Ensure no inference chains remain that lead to eliminated information
+- Verify that remaining information can't be triangulated to answer TARGET questions
+- Check that context clues don't inadvertently reveal eliminated information
+
+STEP 5 - PRESERVATION OPTIMIZATION:
+For PRESERVE questions:
+- Identify minimum information needed for answerability
+- Verify this information doesn't compromise elimination goals
+- Find alternative information sources within text if needed
+- Maintain semantic connections that support these answers
+
+STEP 6 - QUALITY ASSURANCE:
+Perform the blind read test:
+- Read transformed text without referring to original
+- Attempt to answer each TARGET question specifically
+- If any specific answers are possible → TRANSFORMATION FAILED
+- Verify PRESERVE questions remain answerable where possible
+- Ensure text maintains natural flow and readability
+
+CRITICAL SUCCESS CRITERIA:
+✅ PRIMARY: Complete inability to answer TARGET questions specifically
+✅ SECONDARY: Maintained answerability for PRESERVE questions (when possible)
+✅ TERTIARY: Natural, readable text that preserves core meaning
+
+FAILURE CONDITIONS:
+❌ Any TARGET question remains answerable through the text
+❌ Information combinations enable inference of eliminated details
+❌ Context clues inadvertently reveal specific information
+
+ADVANCED VALIDATION QUESTIONS:
+- If someone only had this transformed text, could they answer TARGET questions with specificity?
+- Do any remaining details serve as proxies for eliminated information?
+- Are there hidden inference pathways that weren't considered?
+- Does the text maintain professional quality and readability?
+
+TRANSFORMATION OUTPUT (NO EXPLANATIONS - ONLY THE TRANSFORMED TEXT):
+"""
 
     # Load data
     print(f"Loading data from: {DATA_FILE_PATH}")
@@ -1651,7 +1786,7 @@ def main():
                 random.shuffle(questions)
                 num_omit = strategy_config["num_to_omit"]
                 omit_questions = questions[:num_omit]
-                keep_questions = questions[num_omit:num_omit+random.randint(1,2)]
+                keep_questions = questions[num_omit:]
                 
                 if not keep_questions:
                     continue
@@ -1815,5 +1950,4 @@ def main():
     print("\n--- Completed ---")
 
 if __name__ == '__main__':
-    # main()
-    generate_summary_plots(f'enhanced_results_{MAX_TEXTS_TO_PROCESS}_texts.json', PLOTS_OUTPUT_DIR)
+    main()
