@@ -289,10 +289,10 @@ Answer: Mutual Exclusion
 
 Now, determine the relationship in the following example:
 Text A:
-"{text_a[:500]}..."
+"{text_a}..."
 
 Text B:
-"{text_b[:500]}..."
+"{text_b}..."
 
 Answer:"""
         return prompt
