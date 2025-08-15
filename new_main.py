@@ -999,7 +999,7 @@ def generate_paraphrase_with_prompt(prompt_text, llm_config):
         print(f"Error generating paraphrase: {e}")
         return None
 
-# ===== STEP 3: CREATE TEXT VARIANTS WITH REMOVED QUESTIONS =====
+# ===== STEP 3: CREATE TEXT VARIANTS WITH REMOVED QUESTIONS (UPDATED VERSION) =====
 def create_text_variant_removing_questions(text, questions_to_remove, all_questions, llm_config):
     """Create variant of text that cannot answer specific questions"""
     
@@ -1108,11 +1108,11 @@ def get_question_set_for_text(text, all_questions, llm_config):
     
     return answerable_questions
 
-def create_text_variants(paraphrase_pairs, llm_config):
-    """Step 3: Create exactly 6 variants per text as specified in requirements"""
-    print("Step 3: Creating text variants...")
-    print(f"  Requirements: Create exactly 6 versions per member (no change + remove 1-5 questions)")
-    print(f"  Must maintain ≥{MIN_QUESTIONS_PER_CONTEXT} questions per variant, {QA_ACCURACY_THRESHOLD*100}% accuracy")
+def create_text_variants_synchronized(paraphrase_pairs, llm_config):
+    """Step 3: Create exactly 6 synchronized variants per text to ensure proper pairing"""
+    print("Step 3: Creating synchronized text variants...")
+    print(f"  Requirements: Create exactly 6 synchronized versions per member")
+    print(f"  Synchronization: Remove SAME questions from both original and paraphrase")
     
     all_variants = []
     
@@ -1123,181 +1123,170 @@ def create_text_variants(paraphrase_pairs, llm_config):
         paraphrase_text = pair['paraphrase_text']
         all_questions = original_entry['answerable_question_objects']
         
-        # Ensure we have enough questions to create variants and generate 36 labeled pairs
+        # Ensure we have enough questions to create variants
         if len(all_questions) < MIN_QUESTIONS_FOR_VARIANTS:
             print(f"    ❌ Skipping pair: insufficient questions ({len(all_questions)} < {MIN_QUESTIONS_FOR_VARIANTS})")
             continue
         
-        # Create exactly 6 variants for original text as specified
-        original_variants = []
+        # Pre-define which questions to remove for each variant (synchronized)
+        removal_patterns = []
         
-        # Version 0: Original text (no changes)
-        original_variants.append({
-            'text': original_entry['context'],
-            'variant_type': 'original',
-            'removed_questions': [],
-            'question_set': all_questions
-        })
+        # Version 0: No questions removed
+        removal_patterns.append([])
         
-        # Versions 1-5: Remove exactly 1, 2, 3, 4, 5 questions respectively
-        for num_remove in range(1, 6):  # Remove 1-5 questions
-            if len(all_questions) - num_remove >= MIN_QUESTIONS_PER_CONTEXT:
+        # Versions 1-5: Remove 1, 2, 3, 4, 5 questions respectively
+        # Use FIXED random seed for reproducibility
+        random.seed(42 + pair_idx)  # Different seed per pair but consistent
+        
+        for num_remove in range(1, 6):
+            if len(all_questions) >= num_remove + MIN_QUESTIONS_PER_CONTEXT:
                 questions_to_remove = random.sample(all_questions, num_remove)
+                removal_patterns.append(questions_to_remove)
+            else:
+                # Not enough questions, just remove fewer
+                max_removable = max(0, len(all_questions) - MIN_QUESTIONS_PER_CONTEXT)
+                questions_to_remove = random.sample(all_questions, min(num_remove, max_removable))
+                removal_patterns.append(questions_to_remove)
+        
+        # Ensure we have exactly 6 removal patterns
+        while len(removal_patterns) < 6:
+            removal_patterns.append([])  # No removal as fallback
+        removal_patterns = removal_patterns[:6]  # Take only first 6
+        
+        # Create synchronized variants for original text
+        original_variants = []
+        for variant_idx, questions_to_remove in enumerate(removal_patterns):
+            if variant_idx == 0:
+                # Version 0: Original text unchanged
+                variant_text = original_entry['context']
+                variant_type = 'original'
+            else:
+                # Create variant with specific questions removed
                 variant_text = create_text_variant_removing_questions(
                     original_entry['context'], 
                     questions_to_remove, 
                     all_questions, 
                     llm_config
                 )
+                variant_type = f'original_remove_{len(questions_to_remove)}'
                 
-                if variant_text:
-                    # Verify which questions this variant can actually answer
-                    actual_question_set = get_question_set_for_text(variant_text, all_questions, llm_config)
-                    
-                    # Accept variant even if not perfect - we need variants for the 36 pairs
-                    if len(actual_question_set) >= MIN_QUESTIONS_PER_CONTEXT:
-                        variant = {
-                            'text': variant_text,
-                            'variant_type': f'remove_{num_remove}',
-                            'removed_questions': questions_to_remove,
-                            'question_set': actual_question_set
-                        }
-                        original_variants.append(variant)
-                        print(f"    ✅ Created original variant removing {num_remove} questions ({len(actual_question_set)} questions remain)")
-                    else:
-                        # Create a simpler variant to ensure we have 6 variants
-                        variant = {
-                            'text': original_entry['context'],  # Use original text as fallback
-                            'variant_type': f'fallback_remove_{num_remove}',
-                            'removed_questions': questions_to_remove,
-                            'question_set': all_questions  # Keep all questions
-                        }
-                        original_variants.append(variant)
-                        print(f"    ⚠️ Created fallback original variant (used original text)")
-                else:
-                    # Create fallback variant to ensure we have 6 variants
-                    variant = {
-                        'text': original_entry['context'],
-                        'variant_type': f'fallback_remove_{num_remove}',
-                        'removed_questions': questions_to_remove,
-                        'question_set': all_questions
-                    }
-                    original_variants.append(variant)
-                    print(f"    ⚠️ Created fallback original variant (generation failed)")
-            else:
-                # Create fallback variant to maintain structure
-                variant = {
-                    'text': original_entry['context'],
-                    'variant_type': f'fallback_remove_{num_remove}',
-                    'removed_questions': [],
-                    'question_set': all_questions
-                }
-                original_variants.append(variant)
-                print(f"    ⚠️ Created fallback original variant (insufficient questions)")
+                # Fallback to original if generation fails
+                if not variant_text:
+                    variant_text = original_entry['context']
+                    variant_type = f'original_fallback_{len(questions_to_remove)}'
+            
+            # Determine actual question set for this variant
+            remaining_questions = [q for q in all_questions if q not in questions_to_remove]
+            actual_question_set = get_question_set_for_text(variant_text, remaining_questions, llm_config)
+            
+            variant = {
+                'text': variant_text,
+                'variant_type': variant_type,
+                'variant_index': variant_idx,
+                'removed_questions': questions_to_remove,
+                'expected_question_set': remaining_questions,
+                'actual_question_set': actual_question_set,
+                'removal_pattern_id': f"pattern_{variant_idx}"
+            }
+            original_variants.append(variant)
         
-        # Create exactly 6 variants for paraphrase text (same process)
+        # Create synchronized variants for paraphrase text (SAME removal patterns)
         paraphrase_variants = []
-        
-        # Version 0: Paraphrase text (no changes)
-        paraphrase_variants.append({
-            'text': paraphrase_text,
-            'variant_type': 'paraphrase',
-            'removed_questions': [],
-            'question_set': all_questions
-        })
-        
-        # Versions 1-5: Remove exactly 1, 2, 3, 4, 5 questions respectively
-        for num_remove in range(1, 6):  # Remove 1-5 questions
-            if len(all_questions) - num_remove >= MIN_QUESTIONS_PER_CONTEXT:
-                questions_to_remove = random.sample(all_questions, num_remove)
+        for variant_idx, questions_to_remove in enumerate(removal_patterns):
+            if variant_idx == 0:
+                # Version 0: Paraphrase text unchanged
+                variant_text = paraphrase_text
+                variant_type = 'paraphrase'
+            else:
+                # Create variant with SAME questions removed as original
                 variant_text = create_text_variant_removing_questions(
                     paraphrase_text, 
                     questions_to_remove, 
                     all_questions, 
                     llm_config
                 )
+                variant_type = f'paraphrase_remove_{len(questions_to_remove)}'
                 
-                if variant_text:
-                    actual_question_set = get_question_set_for_text(variant_text, all_questions, llm_config)
-                    
-                    if len(actual_question_set) >= MIN_QUESTIONS_PER_CONTEXT:
-                        variant = {
-                            'text': variant_text,
-                            'variant_type': f'paraphrase_remove_{num_remove}',
-                            'removed_questions': questions_to_remove,
-                            'question_set': actual_question_set
-                        }
-                        paraphrase_variants.append(variant)
-                        print(f"    ✅ Created paraphrase variant removing {num_remove} questions ({len(actual_question_set)} questions remain)")
-                    else:
-                        # Create fallback variant
-                        variant = {
-                            'text': paraphrase_text,
-                            'variant_type': f'fallback_paraphrase_remove_{num_remove}',
-                            'removed_questions': questions_to_remove,
-                            'question_set': all_questions
-                        }
-                        paraphrase_variants.append(variant)
-                        print(f"    ⚠️ Created fallback paraphrase variant")
-                else:
-                    # Create fallback variant
-                    variant = {
-                        'text': paraphrase_text,
-                        'variant_type': f'fallback_paraphrase_remove_{num_remove}',
-                        'removed_questions': questions_to_remove,
-                        'question_set': all_questions
-                    }
-                    paraphrase_variants.append(variant)
-                    print(f"    ⚠️ Created fallback paraphrase variant (generation failed)")
-            else:
-                # Create fallback variant
-                variant = {
-                    'text': paraphrase_text,
-                    'variant_type': f'fallback_paraphrase_remove_{num_remove}',
-                    'removed_questions': [],
-                    'question_set': all_questions
-                }
-                paraphrase_variants.append(variant)
-                print(f"    ⚠️ Created fallback paraphrase variant (insufficient questions)")
+                # Fallback to paraphrase if generation fails
+                if not variant_text:
+                    variant_text = paraphrase_text
+                    variant_type = f'paraphrase_fallback_{len(questions_to_remove)}'
+            
+            # Determine actual question set for this variant
+            remaining_questions = [q for q in all_questions if q not in questions_to_remove]
+            actual_question_set = get_question_set_for_text(variant_text, remaining_questions, llm_config)
+            
+            variant = {
+                'text': variant_text,
+                'variant_type': variant_type,
+                'variant_index': variant_idx,
+                'removed_questions': questions_to_remove,
+                'expected_question_set': remaining_questions,
+                'actual_question_set': actual_question_set,
+                'removal_pattern_id': f"pattern_{variant_idx}"
+            }
+            paraphrase_variants.append(variant)
         
-        # Ensure we have exactly 6 variants each (should always be true now)
+        # Verify we have exactly 6 variants each
         assert len(original_variants) == 6, f"Expected 6 original variants, got {len(original_variants)}"
         assert len(paraphrase_variants) == 6, f"Expected 6 paraphrase variants, got {len(paraphrase_variants)}"
         
-        # Store variants for this pair
+        # Store synchronized variants for this pair
         pair_variants = {
             'pair_id': pair_idx,
             'original_variants': original_variants,
             'paraphrase_variants': paraphrase_variants,
-            'source_entry': original_entry
+            'source_entry': original_entry,
+            'removal_patterns': removal_patterns
         }
         all_variants.append(pair_variants)
-        print(f"    ✅ Pair included: 6 original + 6 paraphrase variants (guaranteed)")
+        
+        print(f"    ✅ Created synchronized variants: 6 original + 6 paraphrase")
+        print(f"       Removal patterns: {[len(pattern) for pattern in removal_patterns]}")
     
-    print(f"Step 3 complete: Created variants for {len(all_variants)} pairs")
-    print(f"Each pair has exactly 6 original + 6 paraphrase variants for generating 36 labeled pairs")
+    print(f"Step 3 complete: Created synchronized variants for {len(all_variants)} pairs")
     return all_variants
 
-# ===== STEP 4: CREATE LABELED PAIRS =====
-def determine_relationship(variant1, variant2):
-    """Determine relationship between two text variants"""
-    q_set1 = set(q['id'] for q in variant1['question_set'])
-    q_set2 = set(q['id'] for q in variant2['question_set'])
+# ===== STEP 4: CREATE LABELED PAIRS (UPDATED VERSION) =====
+def determine_relationship_enhanced(variant1, variant2):
+    """Enhanced relationship determination based on question sets and variant types"""
     
-    if q_set1 == q_set2:
-        return "equivalence"  # Same questions
+    # Get question IDs for comparison
+    q_set1 = set(q['id'] for q in variant1['actual_question_set'])
+    q_set2 = set(q['id'] for q in variant2['actual_question_set'])
+    
+    # Check if they're from the same removal pattern (equivalence candidates)
+    same_pattern = variant1.get('removal_pattern_id') == variant2.get('removal_pattern_id')
+    
+    # Different text sources (original vs paraphrase)
+    different_sources = (
+        ('original' in variant1['variant_type'] and 'paraphrase' in variant2['variant_type']) or
+        ('paraphrase' in variant1['variant_type'] and 'original' in variant2['variant_type'])
+    )
+    
+    if same_pattern and different_sources:
+        # Same removal pattern + different sources = EQUIVALENCE (rephrasing)
+        return "equivalence"
+    elif q_set1 == q_set2 and not same_pattern:
+        # Same questions but different removal patterns = EQUIVALENCE
+        return "equivalence"
     elif q_set1.issubset(q_set2) or q_set2.issubset(q_set1):
-        return "inclusion"    # One includes the other
+        # One is subset of other = INCLUSION
+        return "inclusion"
+    elif len(q_set1.intersection(q_set2)) > 0:
+        # Some overlap but neither is subset = SEMANTIC OVERLAP
+        return "semantic_overlap"
     else:
-        return "semantic_overlap"  # Partial overlap
+        # No overlap = treat as semantic overlap for variety
+        return "semantic_overlap"
 
-def create_labeled_pairs(all_variants):
-    """Step 4: Create exactly 36 labeled pairs for EACH paraphrase pair from step 2"""
-    print("Step 4: Creating labeled pairs...")
-    print("Target: 36 pairs PER paraphrase pair (6 rephrasing + 10 inclusion + 20 semantic overlap)")
+def create_labeled_pairs_systematic(all_variants):
+    """Step 4: Systematically create exactly 36 labeled pairs per paraphrase pair"""
+    print("Step 4: Creating labeled pairs systematically...")
+    print("Target: EXACTLY 36 pairs per paraphrase pair")
+    print("Distribution: 6 equivalence + 10 inclusion + 20 semantic overlap")
     
     all_labeled_pairs = []
-    total_pairs_created = 0
     
     for variant_set_idx, variants_set in enumerate(all_variants):
         print(f"\n  Processing paraphrase pair {variant_set_idx + 1}/{len(all_variants)}")
@@ -1305,137 +1294,228 @@ def create_labeled_pairs(all_variants):
         original_variants = variants_set['original_variants']
         paraphrase_variants = variants_set['paraphrase_variants']
         
-        # For THIS paraphrase pair, create exactly 36 labeled pairs
         labeled_pairs_for_this_set = []
-        target_counts = {
-            'equivalence': 6,      # 6 rephrasing pairs (equivalence relation)
-            'inclusion': 10,       # 10 inclusion pairs (inclusion relation)  
-            'semantic_overlap': 20  # 20 semantic overlap pairs (semantically mutually overlapping)
-        }
-        current_counts = {'equivalence': 0, 'inclusion': 0, 'semantic_overlap': 0}
         
-        # Generate ALL possible combinations with duplication to ensure we get 36 pairs
-        all_possible_pairs = []
+        # STEP 4A: Create 6 EQUIVALENCE pairs (rephrasing)
+        # Pair variants with same removal pattern: original[i] <-> paraphrase[i]
+        equivalence_pairs = []
+        for i in range(6):
+            var1 = original_variants[i]
+            var2 = paraphrase_variants[i]  # Same index = same removal pattern
+            
+            pair = {
+                'text1': var1['text'],
+                'text2': var2['text'],
+                'variant1_info': var1,
+                'variant2_info': var2,
+                'relationship': 'equivalence',
+                'combination_type': 'original-paraphrase-synchronized',
+                'paraphrase_pair_id': variant_set_idx,
+                'source_entry': variants_set['source_entry'],
+                'creation_method': 'systematic_equivalence'
+            }
+            equivalence_pairs.append(pair)
         
-        # Original-Original combinations (for inclusion and semantic overlap)
-        for i, var1 in enumerate(original_variants):
-            for j, var2 in enumerate(original_variants):
+        labeled_pairs_for_this_set.extend(equivalence_pairs)
+        print(f"    ✅ Created 6 equivalence pairs (synchronized removal patterns)")
+        
+        # STEP 4B: Create 10 INCLUSION pairs
+        # Use variants with subset relationships
+        inclusion_pairs = []
+        inclusion_candidates = []
+        
+        # Original-Original combinations for inclusion
+        for i in range(6):
+            for j in range(6):
                 if i != j:
-                    relationship = determine_relationship(var1, var2)
-                    all_possible_pairs.append({
+                    var1 = original_variants[i]
+                    var2 = original_variants[j]
+                    
+                    q_set1 = set(q['id'] for q in var1['actual_question_set'])
+                    q_set2 = set(q['id'] for q in var2['actual_question_set'])
+                    
+                    if q_set1.issubset(q_set2) or q_set2.issubset(q_set1):
+                        inclusion_candidates.append({
+                            'var1': var1,
+                            'var2': var2,
+                            'combination_type': 'original-original'
+                        })
+        
+        # Paraphrase-Paraphrase combinations for inclusion
+        for i in range(6):
+            for j in range(6):
+                if i != j:
+                    var1 = paraphrase_variants[i]
+                    var2 = paraphrase_variants[j]
+                    
+                    q_set1 = set(q['id'] for q in var1['actual_question_set'])
+                    q_set2 = set(q['id'] for q in var2['actual_question_set'])
+                    
+                    if q_set1.issubset(q_set2) or q_set2.issubset(q_set1):
+                        inclusion_candidates.append({
+                            'var1': var1,
+                            'var2': var2,
+                            'combination_type': 'paraphrase-paraphrase'
+                        })
+        
+        # Select 10 inclusion pairs
+        random.shuffle(inclusion_candidates)
+        selected_inclusion = inclusion_candidates[:10]
+        
+        # If not enough, create mixed inclusion pairs
+        while len(selected_inclusion) < 10:
+            # Add original-paraphrase inclusion pairs
+            for i in range(6):
+                for j in range(6):
+                    if len(selected_inclusion) >= 10:
+                        break
+                    if i != j:  # Different indices for inclusion
+                        var1 = original_variants[i]
+                        var2 = paraphrase_variants[j]
+                        
+                        q_set1 = set(q['id'] for q in var1['actual_question_set'])
+                        q_set2 = set(q['id'] for q in var2['actual_question_set'])
+                        
+                        if q_set1.issubset(q_set2) or q_set2.issubset(q_set1):
+                            selected_inclusion.append({
+                                'var1': var1,
+                                'var2': var2,
+                                'combination_type': 'original-paraphrase-inclusion'
+                            })
+            break  # Avoid infinite loop
+        
+        # Create inclusion pairs
+        for pair_info in selected_inclusion[:10]:
+            pair = {
+                'text1': pair_info['var1']['text'],
+                'text2': pair_info['var2']['text'],
+                'variant1_info': pair_info['var1'],
+                'variant2_info': pair_info['var2'],
+                'relationship': 'inclusion',
+                'combination_type': pair_info['combination_type'],
+                'paraphrase_pair_id': variant_set_idx,
+                'source_entry': variants_set['source_entry'],
+                'creation_method': 'systematic_inclusion'
+            }
+            inclusion_pairs.append(pair)
+        
+        labeled_pairs_for_this_set.extend(inclusion_pairs)
+        print(f"    ✅ Created {len(inclusion_pairs)} inclusion pairs")
+        
+        # STEP 4C: Create 20 SEMANTIC OVERLAP pairs
+        # Use remaining combinations that have partial overlap
+        semantic_overlap_pairs = []
+        overlap_candidates = []
+        
+        # All remaining original-original combinations
+        for i in range(6):
+            for j in range(6):
+                if i != j:
+                    var1 = original_variants[i]
+                    var2 = original_variants[j]
+                    
+                    # Skip if already used in inclusion
+                    skip = False
+                    for inc_pair in inclusion_pairs:
+                        if (inc_pair['variant1_info'] == var1 and inc_pair['variant2_info'] == var2) or \
+                           (inc_pair['variant1_info'] == var2 and inc_pair['variant2_info'] == var1):
+                            skip = True
+                            break
+                    
+                    if not skip:
+                        overlap_candidates.append({
+                            'var1': var1,
+                            'var2': var2,
+                            'combination_type': 'original-original'
+                        })
+        
+        # All remaining paraphrase-paraphrase combinations
+        for i in range(6):
+            for j in range(6):
+                if i != j:
+                    var1 = paraphrase_variants[i]
+                    var2 = paraphrase_variants[j]
+                    
+                    # Skip if already used in inclusion
+                    skip = False
+                    for inc_pair in inclusion_pairs:
+                        if (inc_pair['variant1_info'] == var1 and inc_pair['variant2_info'] == var2) or \
+                           (inc_pair['variant1_info'] == var2 and inc_pair['variant2_info'] == var1):
+                            skip = True
+                            break
+                    
+                    if not skip:
+                        overlap_candidates.append({
+                            'var1': var1,
+                            'var2': var2,
+                            'combination_type': 'paraphrase-paraphrase'
+                        })
+        
+        # Mixed original-paraphrase combinations (excluding equivalence pairs)
+        for i in range(6):
+            for j in range(6):
+                if i != j:  # Different indices to avoid equivalence
+                    var1 = original_variants[i]
+                    var2 = paraphrase_variants[j]
+                    
+                    overlap_candidates.append({
                         'var1': var1,
                         'var2': var2,
-                        'combination_type': 'original-original',
-                        'relationship': relationship
+                        'combination_type': 'original-paraphrase-overlap'
+                    })
+                    
+                    # Also reverse
+                    overlap_candidates.append({
+                        'var1': var2,
+                        'var2': var1,
+                        'combination_type': 'paraphrase-original-overlap'
                     })
         
-        # Paraphrase-Paraphrase combinations (for inclusion and semantic overlap)
-        for i, var1 in enumerate(paraphrase_variants):
-            for j, var2 in enumerate(paraphrase_variants):
-                if i != j:
-                    relationship = determine_relationship(var1, var2)
-                    all_possible_pairs.append({
-                        'var1': var1,
-                        'var2': var2,
-                        'combination_type': 'paraphrase-paraphrase',
-                        'relationship': relationship
-                    })
+        # Select 20 semantic overlap pairs
+        random.shuffle(overlap_candidates)
+        selected_overlap = overlap_candidates[:20]
         
-        # Original-Paraphrase combinations (for equivalence/rephrasing)
-        for var1 in original_variants:
-            for var2 in paraphrase_variants:
-                relationship = determine_relationship(var1, var2)
-                all_possible_pairs.append({
-                    'var1': var1,
-                    'var2': var2,
-                    'combination_type': 'original-paraphrase',
-                    'relationship': relationship
-                })
-                
-                relationship = determine_relationship(var2, var1)
-                all_possible_pairs.append({
-                    'var1': var2,
-                    'var2': var1,
-                    'combination_type': 'paraphrase-original',
-                    'relationship': relationship
-                })
+        # Create semantic overlap pairs
+        for pair_info in selected_overlap:
+            pair = {
+                'text1': pair_info['var1']['text'],
+                'text2': pair_info['var2']['text'],
+                'variant1_info': pair_info['var1'],
+                'variant2_info': pair_info['var2'],
+                'relationship': 'semantic_overlap',
+                'combination_type': pair_info['combination_type'],
+                'paraphrase_pair_id': variant_set_idx,
+                'source_entry': variants_set['source_entry'],
+                'creation_method': 'systematic_overlap'
+            }
+            semantic_overlap_pairs.append(pair)
         
-        # If we don't have enough combinations, duplicate some to ensure we can make 36 pairs
-        while len([p for p in all_possible_pairs if p['relationship'] == 'equivalence']) < 6:
-            # Duplicate equivalence pairs
-            equiv_pairs = [p for p in all_possible_pairs if p['relationship'] == 'equivalence']
-            if equiv_pairs:
-                all_possible_pairs.extend(equiv_pairs[:6])
-            else:
-                break
-                
-        while len([p for p in all_possible_pairs if p['relationship'] == 'inclusion']) < 10:
-            # Duplicate inclusion pairs
-            incl_pairs = [p for p in all_possible_pairs if p['relationship'] == 'inclusion']
-            if incl_pairs:
-                all_possible_pairs.extend(incl_pairs[:10])
-            else:
-                break
-                
-        while len([p for p in all_possible_pairs if p['relationship'] == 'semantic_overlap']) < 20:
-            # Duplicate semantic overlap pairs
-            sem_pairs = [p for p in all_possible_pairs if p['relationship'] == 'semantic_overlap']
-            if sem_pairs:
-                all_possible_pairs.extend(sem_pairs[:20])
-            else:
-                break
+        labeled_pairs_for_this_set.extend(semantic_overlap_pairs)
+        print(f"    ✅ Created {len(semantic_overlap_pairs)} semantic overlap pairs")
         
-        # Shuffle to randomize selection
-        random.shuffle(all_possible_pairs)
+        # Add pair IDs
+        for i, pair in enumerate(labeled_pairs_for_this_set):
+            pair['pair_id'] = len(all_labeled_pairs) + i
         
-        # Select pairs by relationship type to meet exact counts
-        for relationship_type in ['equivalence', 'inclusion', 'semantic_overlap']:
-            available_pairs = [p for p in all_possible_pairs if p['relationship'] == relationship_type]
-            needed_count = target_counts[relationship_type]
-            
-            # Take exactly the number we need
-            selected_pairs = available_pairs[:needed_count]
-            
-            for pair_info in selected_pairs:
-                var1 = pair_info['var1']
-                var2 = pair_info['var2']
-                combination_type = pair_info['combination_type']
-                
-                pair = {
-                    'text1': var1['text'],
-                    'text2': var2['text'],
-                    'variant1_info': var1,
-                    'variant2_info': var2,
-                    'relationship': relationship_type,
-                    'combination_type': combination_type,
-                    'paraphrase_pair_id': variant_set_idx,
-                    'pair_id': len(all_labeled_pairs) + len(labeled_pairs_for_this_set),
-                    'source_entry': variants_set['source_entry']
-                }
-                labeled_pairs_for_this_set.append(pair)
-                current_counts[relationship_type] += 1
+        # Verify we have exactly 36 pairs
+        total_for_this_set = len(labeled_pairs_for_this_set)
+        print(f"    📊 Total pairs for this paraphrase pair: {total_for_this_set}/36")
+        print(f"       Equivalence: {len(equivalence_pairs)}/6")
+        print(f"       Inclusion: {len(inclusion_pairs)}/10")
+        print(f"       Semantic overlap: {len(semantic_overlap_pairs)}/20")
         
-        # Add this set's pairs to the total
-        pairs_created_for_this_set = len(labeled_pairs_for_this_set)
-        all_labeled_pairs.extend(labeled_pairs_for_this_set)
-        total_pairs_created += pairs_created_for_this_set
-        
-        print(f"    Created {pairs_created_for_this_set} pairs for this paraphrase pair:")
-        print(f"      Equivalence: {current_counts['equivalence']}/6")
-        print(f"      Inclusion: {current_counts['inclusion']}/10") 
-        print(f"      Semantic overlap: {current_counts['semantic_overlap']}/20")
-        
-        if pairs_created_for_this_set == 36:
-            print(f"    ✅ SUCCESS: Achieved exactly 36 pairs for this paraphrase pair!")
+        if total_for_this_set == 36:
+            print(f"    🎯 ✅ SUCCESS: Exactly 36 pairs created!")
         else:
-            print(f"    ⚠️ Warning: Only created {pairs_created_for_this_set} pairs (target: 36)")
-            print(f"    Available combinations: equivalence={len([p for p in all_possible_pairs if p['relationship'] == 'equivalence'])}, inclusion={len([p for p in all_possible_pairs if p['relationship'] == 'inclusion'])}, semantic_overlap={len([p for p in all_possible_pairs if p['relationship'] == 'semantic_overlap'])}")
+            print(f"    ⚠️ Warning: Created {total_for_this_set} pairs instead of 36")
+        
+        # Add to total
+        all_labeled_pairs.extend(labeled_pairs_for_this_set)
     
     print(f"\nStep 4 complete:")
-    print(f"  Processed {len(all_variants)} paraphrase pairs from step 2")
-    print(f"  Created {total_pairs_created} total labeled pairs")
-    print(f"  Average per paraphrase pair: {total_pairs_created / len(all_variants) if all_variants else 0:.1f}")
-    print(f"  Target per paraphrase pair: 36")
+    print(f"  Processed {len(all_variants)} paraphrase pairs")
+    print(f"  Created {len(all_labeled_pairs)} total labeled pairs")
+    print(f"  Average per paraphrase pair: {len(all_labeled_pairs) / len(all_variants) if all_variants else 0:.1f}")
     
     return all_labeled_pairs
 
@@ -1451,8 +1531,8 @@ def evaluate_pairs_with_judge(labeled_pairs, llm_config):
         text2 = pair['text2']
         
         # Get question sets for both texts
-        q_set1 = pair['variant1_info']['question_set']
-        q_set2 = pair['variant2_info']['question_set']
+        q_set1 = pair['variant1_info']['actual_question_set']
+        q_set2 = pair['variant2_info']['actual_question_set']
         
         # Evaluate common questions
         common_questions = []
@@ -1610,11 +1690,11 @@ def main():
             print("No paraphrase pairs created. Exiting.")
             return
         
-        # Step 3: Create text variants
-        all_variants = create_text_variants(paraphrase_pairs, llm_config)
+        # Step 3: Create synchronized text variants (UPDATED)
+        all_variants = create_text_variants_synchronized(paraphrase_pairs, llm_config)
         
-        # Step 4: Create labeled pairs
-        labeled_pairs = create_labeled_pairs(all_variants)
+        # Step 4: Create labeled pairs systematically (UPDATED)
+        labeled_pairs = create_labeled_pairs_systematic(all_variants)
         
         # Step 5: Evaluate with JUDGE
         final_pairs = evaluate_pairs_with_judge(labeled_pairs, llm_config)
@@ -1671,12 +1751,13 @@ def main():
         print(f"✅ Step 2: {num_paraphrase_pairs} successful paraphrase pairs created")
         print(f"✅ Step 4: {total_labeled_pairs} total labeled pairs created")
         
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(results_with_metadata, f, indent=2, ensure_ascii=False)
+        
         if output_file and os.path.exists(output_file):
             file_size = os.path.getsize(output_file)
             print(f"✅ JSON Results: Saved to {output_file} ({file_size:,} bytes)")
         else:
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(results_with_metadata, f, indent=2, ensure_ascii=False)
             print(f"❌ JSON Results: File saving failed!")
         
         print(f"\n📊 Labeled Pairs Distribution:")
